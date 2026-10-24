@@ -101,9 +101,25 @@ disagree, one of them is wrong.
 31. The jump report (adjusted session moves beyond 25%) is the final check: after review, each
     jump is either a fixed factor or an explained genuine move.
 
+## Point in time
+
+32. Every accepted action records when its factor became knowable (`known_on`): the last date
+    whose data the decision reads. Gate-confirmed and TERP factors and dividends: the ex-date
+    (the ex open). A demerger held at its market gap: the close of the settle session. A
+    demerger confirmed by its ratio: the resulting company's first close. A value only research
+    or a correction supplies: its stated source date, never before the ex-date.
+33. An action whose `known_on` is unknown is never dated by guess: it is left out of every as-of
+    build and flags every bar from its ex-date as `factor_pending`.
+34. The as-of build for day D uses only bars up to D, factors with `known_on` <= D and ISIN links
+    whose `known_on` (the last bar of the window the link rules read) is <= D. The default build
+    is the hindsight view, and flags the bars between an ex-date and its `known_on`.
+35. `announced_on` is the first NSE filing naming the event within 180 days before the ex-date.
+    It is information only; NSE's `caBroadcastDate` is not used (mostly empty, often after the
+    ex-date).
+
 ## Coverage
 
-32. Every weekday is accounted for: a bhavcopy, a listed holiday, a gap (no file and no holiday
+36. Every weekday is accounted for: a bhavcopy, a listed holiday, a gap (no file and no holiday
     list names it) or unaccounted (never fetched). A missing day is never assumed a holiday.
-33. Weekend sessions (Budget Saturdays, Muhurat) are sessions when a bhavcopy exists.
-34. Index history starts later than the bars; only days after an index's first day count.
+37. Weekend sessions (Budget Saturdays, Muhurat) are sessions when a bhavcopy exists.
+38. Index history starts later than the bars; only days after an index's first day count.

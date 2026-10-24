@@ -41,10 +41,20 @@ RESEARCH_COLUMNS = (
     "our_data_wrong",  # yes / no / unknown + what
     "confidence",  # high | medium | low
     "source_url",
+    "source_date",  # YYYY-MM-DD the source was published: when a backtest could have known it
     "quote",  # short verbatim quote from the source
     "notes",
 )
-CORRECTION_COLUMNS = ("op", "isin", "ex_date", "type", "value", "new_ex_date", "note")
+CORRECTION_COLUMNS = (
+    "op",
+    "isin",
+    "ex_date",
+    "type",
+    "value",
+    "new_ex_date",
+    "note",
+    "known_on",  # optional: the date the corrected value was public (empty = unknown)
+)
 CORRECTION_OPS = ("add", "replace", "delete", "move")
 CORRECTION_TYPES = ("split", "bonus", "rights", "demerger", "other", "dividend")
 CONFIDENCE = {"low": 0, "medium": 1, "high": 2}
@@ -81,6 +91,7 @@ class ResearchRow:
     wrong: str
     confidence: int
     source_url: str
+    source_date: date | None
     quote: str
     notes: str
 
@@ -118,6 +129,7 @@ def read_research(folder: Path) -> list[ResearchRow]:
                         r["our_data_wrong"].lower(),
                         CONFIDENCE.get(r["confidence"].lower(), 0),
                         r["source_url"],
+                        parse.nse_date(r["source_date"]),
                         r["quote"],
                         r["notes"],
                     )
@@ -135,12 +147,15 @@ class Correction:
     value: Fraction | None
     new_ex_date: date | None
     note: str
+    known_on: date | None = None
 
 
 def read_corrections(path: Path) -> list[Correction]:
-    """`op isin ex_date type value new_ex_date note`, tab-separated. `value` is the factor
-    (0 < f < 1 for a price factor; a public-only bonus is old shares / new shares) or, for
-    type `dividend`, rupees per share. Every line must carry a note (the evidence)."""
+    """`op isin ex_date type value new_ex_date note [known_on]`, tab-separated. `value` is the
+    factor (0 < f < 1 for a price factor; a public-only bonus is old shares / new shares) or,
+    for type `dividend`, rupees per share. Every line must carry a note (the evidence).
+    `known_on` is when the corrected value was public; without it an added or replaced value
+    is left out of point-in-time (as-of) builds."""
     if not path.exists():
         return []
     out = []
@@ -151,7 +166,7 @@ def read_corrections(path: Path) -> list[Correction]:
         if parts[0] == "op":
             continue
         parts += [""] * (len(CORRECTION_COLUMNS) - len(parts))
-        op, isin, ex, kind, value, new_ex, note = parts[:7]
+        op, isin, ex, kind, value, new_ex, note, known = parts[:8]
         ex_date = parse.nse_date(ex)
         f = number(value)
         bad = (
@@ -163,10 +178,23 @@ def read_corrections(path: Path) -> list[Correction]:
             or (op in ("add", "replace") and (f is None or f <= 0))
             or (op in ("add", "replace") and kind != "dividend" and not f < 1)  # type: ignore[operator]
             or (op == "move" and parse.nse_date(new_ex) is None)
+            or (bool(known) and parse.nse_date(known) is None)
         )
         if bad:
             raise CurationError(f"{path.name}:{n}: bad correction line")
-        out.append(Correction(n, op, isin.upper(), ex_date, kind, f, parse.nse_date(new_ex), note))  # type: ignore[arg-type]
+        out.append(
+            Correction(
+                n,
+                op,
+                isin.upper(),
+                ex_date,  # type: ignore[arg-type]
+                kind,
+                f,
+                parse.nse_date(new_ex),
+                note,
+                parse.nse_date(known) if known else None,
+            )
+        )
     return out
 
 

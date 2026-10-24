@@ -13,6 +13,12 @@ Tables in `noodles.duckdb` (all rebuilt from the raw shards, so a rerun gives th
 - `dividends`: one row per (ISIN, ex-date): the rupees per share, or why it is not trusted.
 - `announcements`, `board_meetings`: when those shards were pulled.
 
+Each event row also carries `announced_on` / `notice_url`: the first NSE filing of the symbol
+(announcement or board-meeting intimation) in the NOTICE_DAYS before the ex-date whose text names
+the event (`first_notice`). It is when the market first heard of the event, empty when the
+filings for that window were not pulled. NSE's `caBroadcastDate` is not used: it is mostly empty
+and, where set, often later than the ex-date.
+
 Every cell is untrusted text: it is parsed by `nse_noodles.parse`, never executed or trusted.
 """
 
@@ -37,6 +43,14 @@ _EQUITY_EVIDENCE = re.compile(
     re.I,
 )
 EVIDENCE_BEFORE, EVIDENCE_AFTER = 150, 90  # announcement window (days) around a bonus ex-date
+NOTICE_DAYS = 180  # an event's first filing falls this many days before its ex-date at most
+NOTICE = {
+    "splits_bonus": re.compile(r"split|sub-?division|bonus", re.I),
+    "rights_issues": re.compile(r"\brights?\b", re.I),
+    "demergers": re.compile(r"demerger|scheme\s+of\s+arrangement|composite\s+scheme", re.I),
+    "bonus_instruments": re.compile(r"bonus", re.I),
+    "dividends": re.compile(r"dividend", re.I),
+}
 
 
 def _cell(value: object) -> str:
@@ -153,6 +167,34 @@ def _board_meetings(layout: Layout) -> list[dict]:
     ]
 
 
+def first_notice(
+    notices: list[tuple[date, str, str]], ex: date | None, pattern: re.Pattern[str]
+) -> tuple[date | None, str]:
+    """(day, url) of the earliest (day, text, url) filing within NOTICE_DAYS before `ex`, up to
+    and including the ex-date, whose text matches `pattern`; (None, "") when there is none."""
+    if ex is None:
+        return None, ""
+    hits = [
+        (day, url)
+        for day, text, url in notices
+        if 0 <= (ex - day).days <= NOTICE_DAYS and pattern.search(text)
+    ]
+    return min(hits) if hits else (None, "")
+
+
+def _notices(anns: list[dict], meetings: list[dict]) -> dict[str, list[tuple[date, str, str]]]:
+    out: dict[str, list[tuple[date, str, str]]] = defaultdict(list)
+    for a in anns:
+        day = _an_dt(a["announced_at"])
+        if day is not None:
+            out[a["symbol"]].append((day, f"{a['category']} {a['text']}", a["file"]))
+    for m in meetings:
+        day = _an_dt(m["intimated_at"])
+        if day is not None:
+            out[m["symbol"]].append((day, f"{m['purpose']} {m['description']}", ""))
+    return out
+
+
 def _legs_text(legs: tuple[parse.Leg, ...] | None) -> str:
     return "" if not legs else ";".join(f"{leg.action_type}={leg.factor}" for leg in legs)
 
@@ -160,6 +202,8 @@ def _legs_text(legs: tuple[parse.Leg, ...] | None) -> str:
 def build(layout: Layout) -> dict[str, int]:
     feed = feed_rows(layout)
     anns = _announcements(layout)
+    meetings = _board_meetings(layout)
+    notices = _notices(anns, meetings)
     by_symbol: dict[str, list[dict]] = defaultdict(list)
     for a in anns:
         by_symbol[a["symbol"]].append(
@@ -240,8 +284,12 @@ def build(layout: Layout) -> dict[str, int]:
         "bonus_instruments": instruments,
         "dividends": dividends,
         "announcements": anns,
-        "board_meetings": _board_meetings(layout),
+        "board_meetings": meetings,
     }
+    for name, pattern in NOTICE.items():
+        for row in tables[name]:
+            day, url = first_notice(notices.get(row["symbol"], []), row["ex_date"], pattern)
+            row["announced_on"], row["notice_url"] = day, url
     counts = {}
     layout.root.mkdir(parents=True, exist_ok=True)
     with duckdb.connect(str(layout.db)) as con:

@@ -104,8 +104,10 @@ noodles --data ~/nse-data run --from 2011-06-22
 
 Keep `--data` outside any git repository. At the default pace the full history takes several
 hours (about 3,900 bhavcopy files plus as many index files at one request per 2 s, and about
-380 monthly corporate-action requests for equities and SME). Announcements (`pull nse --dataset
-announcements`, weekly requests) are optional; they add instrument-class evidence for bonuses.
+380 monthly corporate-action requests for equities and SME). Announcements and board meetings
+(`pull nse --dataset announcements board_meetings`, or `run --with-announcements`) are optional;
+they add instrument-class evidence for bonuses and date each event's first notice
+(`announced_on`).
 
 Weekend special sessions (Budget Saturdays, Muhurat Sundays) are fetched with
 `pull bhavcopy --extra-days YYYY-MM-DD ...`.
@@ -119,10 +121,12 @@ Under `--data`:
 | `raw/` | Untouched downloads (zips, CSVs, JSON shards) and `not_found.json` (archive 404s) |
 | `bars/date=YYYY-MM-DD.parquet` | Raw bars: `date, isin, symbol, series, open, high, low, close, prev_close, volume, traded_value` (one row per ISIN; EQ, then BE, BZ, then block windows) |
 | `index/date=YYYY-MM-DD.parquet` | `date, index_name, open, high, low, close` |
-| `out/adjusted_daily.parquet` | Every raw bar plus `chain_isin` (the company's current ISIN), `price_factor`, `div_factor`, `adj_open/high/low/close` (price basis), `adj_volume`, `tr_close` (total return), `ordinary_equity` |
+| `out/adjusted_daily.parquet` | Every raw bar plus `chain_isin` (the company's current ISIN), `price_factor`, `div_factor`, `adj_open/high/low/close` (price basis), `adj_volume`, `tr_close` (total return), `ordinary_equity`, `factor_pending` (see [Point in time](#point-in-time)) |
+| `out/adjusted_daily_asof=D.parquet`, `out/instruments_asof=D.parquet` | The same, as it could have been built after the close of D (`build adjusted --as-of D`) |
 | `out/instruments.parquet` | Per chain: `isins, symbols, last_symbol, first_day, last_day, ordinary_equity, stopped_trading` |
 | `out/jumps.csv` | Unexplained adjusted moves above 25%: `chain_isin, isin, symbol, previous_day, date, previous_close, adj_open, ratio, security, feed_near, review_near` |
 | `out/review.csv` | Everything waiting for a human: corporate-action rows and ISIN successions, with reason and evidence |
+| `out/adjustment_log.csv` | Every accepted action: `symbol, action_type, factor, cash, method, source, announced_on, notice_url, ex_date, known_on, known_basis, lag_sessions` |
 | `out/coverage.json` | Weekdays by bucket (`holiday, gap, unaccounted, on_listed_holiday, weekend_session`) and `index_missing` |
 | `noodles.duckdb` | All tables below |
 
@@ -136,15 +140,49 @@ Tables in `noodles.duckdb`:
 | `demergers`, `bonus_instruments` | feed columns (ratios and values come from research) |
 | `dividends` | `isin, symbol, ex_date, amount, kinds, status, subjects` (one row per ISIN and ex-date) |
 | `announcements`, `board_meetings` | as NSE gives them (when pulled) |
-| `lineage` | `old_isin, new_isin, effective, status (linked/review), reason, evidence` |
+| `lineage` | `old_isin, new_isin, effective, status (linked/review), reason, evidence, known_on` |
 | `chain_map` | `isin, chain_isin, depth` |
-| `actions` | Accepted: `chain_isin, isin, symbol, ex_date, action_type, factor, cash, method, source, text, evidence` |
+| `actions` | Accepted: `chain_isin, isin, symbol, ex_date, action_type, factor, cash, method, source, text, evidence, announced_on, notice_url, known_on, known_basis` |
 | `review`, `skipped` | `table, symbol, isin, ex_date, reason, text, hint, evidence` |
 | `corrections_log` | What each correction line did |
 
 Use the **price basis** (`adj_*`) for fills, stops and P&L, crediting `cash` from `actions` on
 ex-dates to shares held into them. Use **`tr_close`** for signals. Use raw `close` for any rule
 on an absolute rupee price (minimum price, tick size).
+
+### Point in time
+
+`adjusted_daily.parquet` is built with hindsight: every bar before an ex-date is scaled by a
+factor nobody knew until that ex-date, and some factors were knowable only later. Each accepted
+action therefore carries three dates:
+
+| Date | Meaning |
+|---|---|
+| `announced_on` | The first NSE filing of the symbol (announcement or board-meeting intimation) in the 180 days before the ex-date that names the event; empty when those filings were not pulled |
+| `ex_date` | NSE's ex-date |
+| `known_on` | The last date whose data the factor depends on, so the first date a backtest could have used it; `known_basis` says which fact that was |
+
+| `known_basis` | `known_on` |
+|---|---|
+| `ex_open` | the ex-date: split, bonus and rights factors confirmed (or TERP-priced) at the ex-date open; dividends |
+| `settled_close` | the close `SETTLE_SESSIONS` (5) sessions from the ex-date: a demerger held at its market gap without a cross-check |
+| `resulting_first_close` | the resulting company's first close: a demerger confirmed by its researched ratio |
+| `research_source_date` | the research row's `source_date`, never before the ex-date: a value only research supplies |
+| `research_undated`, `correction_undated` | unknown (`known_on` empty): such an action is left out of every as-of build |
+| `correction` | the correction line's `known_on` |
+
+A run of the method on Sep 2026, for example, accepted a demerger at its ex-date opening gap
+(ex-date 7 Sep, previous close 728.25, ex open 260.00, factor 0.3570, no cross-check). The gap
+still held at the fifth session's close, so its log row reads `ex_date 2026-09-07,
+known_on 2026-09-11, known_basis settled_close, lag_sessions 4`. A build `--as-of 2026-09-10`
+leaves that stock unadjusted (the raw 64% gap shows), and `--as-of 2026-09-11` applies 0.3570
+to every earlier bar. In the full build the four bars from 7 to 10 Sep carry
+`factor_pending = true`: the hindsight series shows no gap there that a trader then would have
+seen.
+
+For a backtest: compute signals as of each day from the as-of view (or skip names on
+`factor_pending` days), and treat ISIN successions the same way: `lineage.known_on` is the last
+bar of the new ISIN's first ten days, the window the link rules read.
 
 ## Review lists
 
@@ -174,14 +212,17 @@ add. It is input, never output, and is re-applied on every rebuild.
 - `research/*.csv`: sourced research rows (columns in `nse_noodles/curation.py:RESEARCH_COLUMNS`).
   For example, a demerger leg:
   ```csv
-  table,symbol,isin,ex_date,leg_type,resulting_name,resulting_symbol,resulting_isin,ratio_a,ratio_b,issue_price,face_value,partly_paid,coa_parent_pct,coa_resulting_pct,non_equity_consideration,value_per_share_rs,record_date,our_data_wrong,confidence,source_url,quote,notes
-  demerger,PARENT,INE000X01011,2025-01-06,demerger,Child Ltd,CHILD,INE000Y01019,1,10,,,,,,,,2025-01-06,no,high,https://example.com/filing.pdf,"1 equity share of Child for every 10 shares of Parent",
+  table,symbol,isin,ex_date,leg_type,resulting_name,resulting_symbol,resulting_isin,ratio_a,ratio_b,issue_price,face_value,partly_paid,coa_parent_pct,coa_resulting_pct,non_equity_consideration,value_per_share_rs,record_date,our_data_wrong,confidence,source_url,source_date,quote,notes
+  demerger,PARENT,INE000X01011,2025-01-06,demerger,Child Ltd,CHILD,INE000Y01019,1,10,,,,,,,,2025-01-06,no,high,https://example.com/filing.pdf,2024-11-20,"1 equity share of Child for every 10 shares of Parent",
   ```
-- `corrections.tsv`: reviewed fixes, `op isin ex_date type value new_ex_date note` (tab-separated;
-  `op` is add / replace / delete / move; `value` is the factor, or rupees per share for
-  `dividend`). Every line needs a note with its evidence:
+  `source_date` is when the source was published. A value taken from an undated row has no
+  `known_on` and stays out of as-of builds.
+- `corrections.tsv`: reviewed fixes, `op isin ex_date type value new_ex_date note [known_on]`
+  (tab-separated; `op` is add / replace / delete / move; `value` is the factor, or rupees per
+  share for `dividend`; `known_on` is when the corrected value was public). Every line needs a
+  note with its evidence:
   ```tsv
-  add	INE000X01011	2019-12-19	split	0.1		NSE circular: unit face value 10 -> 1; gap 0.1003
+  add	INE000X01011	2019-12-19	split	0.1		NSE circular: unit face value 10 -> 1; gap 0.1003	2019-12-10
   ```
 - `lineage_overrides.tsv`: `op old_isin new_isin note`, op link / unlink.
 - `holidays.txt`: past NSE trading holidays, one ISO date per line. NSE publishes only the
@@ -214,6 +255,11 @@ add. It is input, never output, and is re-applied on every rebuild.
   from NSE circulars through the correction list.
 - **Market-gap demerger factors** carry about a day of noise: the special pre-open price is
   the market's estimate, not an accounting value.
+- **The default series uses hindsight.** Use the as-of build or `factor_pending` for anything
+  point in time (see [Point in time](#point-in-time)). `known_on` covers what the factor's own
+  confirmation reads; whether the event would have been known at all before its ex-date
+  (`announced_on`) is only as good as the announcements pulled, and research or corrections
+  without a source date are left out of as-of builds rather than dated by guess.
 - **No pay dates.** Dividend cash is credited on the ex-date.
 - The website JSON endpoints can change or block automated access at any time.
 

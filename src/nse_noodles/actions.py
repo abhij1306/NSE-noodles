@@ -18,6 +18,14 @@ Order of work:
 
 Nothing is guessed: a row that does not parse, has no bars, or is not confirmed by the bars is a
 review row with a reason.
+
+Every accepted action carries `known_on`: the last date whose data the factor depends on, so the
+first date a backtest could have used it (`known_basis` says which fact that was): the ex-date
+open for a gate-confirmed or TERP factor and for a dividend, the close SETTLE_SESSIONS on for a
+demerger held at its market gap, the resulting company's first close for a demerger confirmed by
+its ratio, and the research `source_date` for a value only research supplies (empty when the
+research row has none: such an action is left out of as-of builds). `announced_on` (from
+`ca_db`) is when the market first heard of the event.
 """
 
 from __future__ import annotations
@@ -76,6 +84,8 @@ class Proposal:
     source: str = "nse_feed"
     research: list[ResearchRow] = field(default_factory=list)
     reason: str = ""  # set when the text alone already decides review / skip
+    announced_on: date | None = None
+    notice_url: str = ""
 
 
 @dataclass
@@ -174,6 +184,11 @@ def _matches(r: ResearchRow, p: Proposal) -> bool:
     return r.ex_date == p.ex_date
 
 
+def _noticed(p: Proposal, r: dict) -> Proposal:
+    p.announced_on, p.notice_url = r.get("announced_on"), r.get("notice_url") or ""
+    return p
+
+
 def proposals(con: duckdb.DuckDBPyConnection, research: Sequence[ResearchRow]) -> list[Proposal]:
     out: list[Proposal] = []
     for r in _rows(con, "splits_bonus"):
@@ -189,7 +204,7 @@ def proposals(con: duckdb.DuckDBPyConnection, research: Sequence[ResearchRow]) -
             )
         else:
             p.legs = _legs(r["legs"])
-        out.append(p)
+        out.append(_noticed(p, r))
     for r in _rows(con, "rights_issues"):
         if r["ex_date"] is None:
             continue
@@ -203,24 +218,30 @@ def proposals(con: duckdb.DuckDBPyConnection, research: Sequence[ResearchRow]) -
             )
         else:
             p.reason = r["parse_status"]
-        out.append(p)
+        out.append(_noticed(p, r))
     for r in _rows(con, "demergers"):
         if r["ex_date"] is not None:
             out.append(
-                Proposal(
-                    "demergers", r["symbol"], r["isin"], r["ex_date"], r["subject"], r["market"]
+                _noticed(
+                    Proposal(
+                        "demergers", r["symbol"], r["isin"], r["ex_date"], r["subject"], r["market"]
+                    ),
+                    r,
                 )
             )
     for r in _rows(con, "bonus_instruments"):
         if r["ex_date"] is not None:
             out.append(
-                Proposal(
-                    "bonus_instruments",
-                    r["symbol"],
-                    r["isin"],
-                    r["ex_date"],
-                    r["subject"],
-                    r["market"],
+                _noticed(
+                    Proposal(
+                        "bonus_instruments",
+                        r["symbol"],
+                        r["isin"],
+                        r["ex_date"],
+                        r["subject"],
+                        r["market"],
+                    ),
+                    r,
                 )
             )
     for r in _rows(con, "dividends"):
@@ -231,7 +252,7 @@ def proposals(con: duckdb.DuckDBPyConnection, research: Sequence[ResearchRow]) -
         else:
             skip = r["status"] in SKIP_DIVIDEND
             p.reason = ("skip:" if skip else "") + r["status"]
-        out.append(p)
+        out.append(_noticed(p, r))
 
     table_of = {
         "demerger": "demergers",
@@ -288,6 +309,7 @@ def _accept(
     factor: Fraction | None,
     method: str,
     evidence: dict,
+    known: tuple[date | None, str],
     cash: Decimal | None = None,
 ) -> dict:
     sources = [
@@ -310,7 +332,21 @@ def _accept(
         else p.source,
         "text": p.text[:500],
         "evidence": json.dumps(evidence, default=str, sort_keys=True),
+        "announced_on": p.announced_on,
+        "notice_url": p.notice_url,
+        "known_on": known[0],
+        "known_basis": known[1],
     }
+
+
+def research_known(rows: Sequence[ResearchRow], floor: date) -> tuple[date | None, str]:
+    """When a value taken from research was public: the latest `source_date` of the rows used,
+    never before `floor` (the session the rest of the decision read). (None, ...) when a row
+    has no source date: the action is then left out of point-in-time builds."""
+    days = [r.source_date for r in rows]
+    if not days or any(d is None for d in days):
+        return None, "research_undated"
+    return max(floor, *days), "research_source_date"  # type: ignore[type-var]
 
 
 def _bar_evidence(before: Bar, on: Bar) -> dict[str, Any]:
@@ -375,6 +411,14 @@ def decide_price_group(
         "verdict": verdict.reason or "confirmed",
     }
     rights_only = all(k == "rights" for k in kinds)
+    research_terms = [
+        r
+        for p, k, _ in legs
+        if k == "rights"
+        for r in p.research
+        if r.confidence >= 1 and r.ratio and r.issue_price
+    ]
+    known = research_known(research_terms, on.day) if research_terms else (on.day, "ex_open")
     if not verdict.confirmed and not (rights_only and verdict.reason == "ambiguous"):
         for p in {id(p): p for p, _, _ in legs}.values():
             out.review.append(_row(p, verdict.reason, evidence))
@@ -384,7 +428,9 @@ def decide_price_group(
         method = "gate_confirmed" if verdict.confirmed else "terp_price_unconfirmed"
         if kind == "rights":
             method = ("terp; " + method) if verdict.confirmed else method
-        accepted.append(_accept(chain, before, p, kind, f, method, {**evidence, "hint": p.hint}))
+        accepted.append(
+            _accept(chain, before, p, kind, f, method, {**evidence, "hint": p.hint}, known)
+        )
     return accepted
 
 
@@ -426,16 +472,21 @@ def decide_demerger(
     prev = fr(before.close)
     gap = fr(on.open) / prev / same_day
     checks: dict[str, Fraction] = {}
+    check_known: dict[str, tuple[date | None, str]] = {}
     priced = []
+    first_closes = []
     for r in legs:
         child = resulting.get(children.get((r.file, r.line), ""), [])
         first = next((b for b in child if b.day >= p.ex_date), None)
         if r.ratio and first is not None and first.close > 0:
             priced.append((r.ratio[0], r.ratio[1], fr(first.close)))
+            first_closes.append(first.day)
     if legs and len(priced) == len(legs) and same_day == 1:
         rf = factors.ratio_factor(priced, prev)
         if rf is not None:
             checks["ratio"] = rf
+            ratio_known, why = research_known(legs, max(first_closes))
+            check_known["ratio"] = (ratio_known, "resulting_first_close" if ratio_known else why)
     coa = factors.coa_factor(
         next((r.coa_parent for r in legs if r.coa_parent is not None), None),
         [r.coa_resulting for r in legs],
@@ -443,6 +494,7 @@ def decide_demerger(
     note = coa if isinstance(coa, str) else ""
     if isinstance(coa, Fraction):
         checks["coa"] = coa
+        check_known["coa"] = research_known(legs, on.day)
     later = [b for b in series if b.day >= on.day]
     settled = None
     if len(later) >= factors.SETTLE_SESSIONS:
@@ -462,7 +514,14 @@ def decide_demerger(
     method = "market_gap; " + "; ".join(
         f"{k} {f4(v)}" + ("" if factors.agrees(gap, v) else " disagrees") for k, v in checks.items()
     )
-    return _accept(chain, before, p, "demerger", factor, method.rstrip("; "), evidence)
+    # known as soon as the first route that accepts it was knowable: an agreeing check, or the
+    # gap holding SETTLE_SESSIONS on
+    routes = [check_known[k] for k, v in checks.items() if factors.agrees(gap, v)]
+    if factors.market_factor(gap, {}, True, settled)[0] is not None:
+        routes.append((later[factors.SETTLE_SESSIONS - 1].day, "settled_close"))
+    dated = [r for r in routes if r[0] is not None]
+    known = min(dated) if dated else routes[0]
+    return _accept(chain, before, p, "demerger", factor, method.rstrip("; "), evidence, known)
 
 
 def decide_cash(chain: str, p: Proposal, series: list[Bar], out: Outcome) -> dict | None:
@@ -475,6 +534,7 @@ def decide_cash(chain: str, p: Proposal, series: list[Bar], out: Outcome) -> dic
     p_close = Decimal(str(prev.close))
     cash = p.cash
     method = "dividend"
+    known: tuple[date | None, str] = (p.ex_date, "ex_open")
     if p.table == "bonus_instruments":
         rows = [r for r in p.research if r.value_per_share]
         if not rows:
@@ -495,6 +555,7 @@ def decide_cash(chain: str, p: Proposal, series: list[Bar], out: Outcome) -> dic
             out.skipped.append(_row(p, "below_one_percent"))
             return None
         method = "bonus_instrument_as_cash"
+        known = research_known([r], p.ex_date)
     assert cash is not None
     if factors.over_yield(cash, p_close):
         out.review.append(
@@ -508,7 +569,7 @@ def decide_cash(chain: str, p: Proposal, series: list[Bar], out: Outcome) -> dic
         "tr_factor": str(f),
         "kinds": p.hint,
     }
-    return _accept(chain, prev, p, "dividend", None, method, evidence, cash)
+    return _accept(chain, prev, p, "dividend", None, method, evidence, known, cash)
 
 
 def apply_corrections(
@@ -543,6 +604,10 @@ def apply_corrections(
                     "source": "correction",
                     "text": c.note[:500],
                     "evidence": json.dumps({"line": c.line, "note": c.note}),
+                    "announced_on": None,
+                    "notice_url": "",
+                    "known_on": c.known_on,
+                    "known_basis": "correction" if c.known_on else "correction_undated",
                 }
         elif held is None:
             status = "not_found"
@@ -554,6 +619,8 @@ def apply_corrections(
                     "factor": 1.0 if c.action_type == "dividend" else value,
                     "method": f"correction (was {held['factor']})",
                     "source": "correction",
+                    "known_on": c.known_on,
+                    "known_basis": "correction" if c.known_on else "correction_undated",
                 }
             )
             if c.action_type == "dividend":
@@ -562,6 +629,8 @@ def apply_corrections(
             del index[key]
             held["ex_date"] = c.new_ex_date
             held["method"] = f"correction (moved from {c.ex_date})"
+            if held["known_on"] is not None and c.new_ex_date > held["known_on"]:
+                held["known_on"] = c.new_ex_date
             index[(chain, c.new_ex_date, c.action_type)] = held
         log.append(
             {
@@ -624,6 +693,10 @@ ACTION_SCHEMA = {
     "source": pl.Utf8,
     "text": pl.Utf8,
     "evidence": pl.Utf8,
+    "announced_on": pl.Date,
+    "notice_url": pl.Utf8,
+    "known_on": pl.Date,
+    "known_basis": pl.Utf8,
 }
 REVIEW_SCHEMA = {
     "table": pl.Utf8,
@@ -642,6 +715,7 @@ LINEAGE_SCHEMA = {
     "status": pl.Utf8,
     "reason": pl.Utf8,
     "evidence": pl.Utf8,
+    "known_on": pl.Date,
 }
 
 
@@ -684,6 +758,10 @@ def build(layout: Layout, curation: Path) -> dict[str, Any]:
                     "status": d.status,
                     "reason": d.reason,
                     "evidence": lineage.evidence_json(d),
+                    # the link reads the new ISIN's first EDGE_DAYS of bars
+                    "known_on": chains.spans[d.new_isin].head[-1].day
+                    if d.new_isin in chains.spans
+                    else None,
                 }
                 for d in decisions
             ],

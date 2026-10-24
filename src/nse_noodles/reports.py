@@ -10,11 +10,15 @@ combined review list (all written under `out/`, all also printed as counts).
   holiday list names the day) or unaccounted (never asked, or the request failed). Weekend
   sessions (Budget Saturdays, Muhurat) are listed. Index days missing after the first index
   day are listed too.
+- Adjustment log: every accepted action with when the market first heard of it
+  (`announced_on`), its ex-date, and the first date a backtest could have used its factor
+  (`known_on`, `known_basis`), with the sessions between ex-date and `known_on` (`lag_sessions`).
 """
 
 from __future__ import annotations
 
 import json
+from bisect import bisect_left
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -163,6 +167,31 @@ def coverage(layout: Layout, holidays_file: str | None = None) -> dict[str, list
     return out
 
 
+LOG_SQL = """
+SELECT chain_isin, isin, symbol, action_type, factor, cash, method, source, announced_on,
+       notice_url, ex_date, known_on, known_basis, text
+FROM actions ORDER BY ex_date, chain_isin, action_type
+"""
+
+
+def lag_sessions(sessions: list[date], ex: date, known: date | None) -> int | None:
+    """Sessions from the ex-date's session to the session of `known` (0: known at the ex-date
+    open); None when `known` is unknown."""
+    if known is None:
+        return None
+    return max(0, bisect_left(sessions, known) - bisect_left(sessions, ex))
+
+
+def adjustment_log(layout: Layout) -> pl.DataFrame:
+    with duckdb.connect(str(layout.db), read_only=True) as con:
+        log = con.sql(LOG_SQL).pl()
+    sessions = bar_sessions(layout)
+    lags = [
+        lag_sessions(sessions, e, k) for e, k in zip(log["ex_date"], log["known_on"], strict=True)
+    ]
+    return log.with_columns(pl.Series("lag_sessions", lags, dtype=pl.Int64))
+
+
 def write_all(layout: Layout, holidays_file: str | None = None) -> dict[str, object]:
     j = jumps(layout)
     atomic_write(layout.out / "jumps.csv", lambda tmp: j.write_csv(tmp))
@@ -174,10 +203,19 @@ def write_all(layout: Layout, holidays_file: str | None = None) -> dict[str, obj
     with duckdb.connect(str(layout.db), read_only=True) as con:
         review = con.sql(REVIEW_SQL).pl()
     atomic_write(layout.out / "review.csv", lambda tmp: review.write_csv(tmp))
+    log = adjustment_log(layout)
+    atomic_write(layout.out / "adjustment_log.csv", lambda tmp: log.write_csv(tmp))
     by_security = j.group_by("security").len().sort("security").rows() if j.height else []
     return {
         "jumps": j.height,
         "jumps_by_security": dict(by_security),
         "review": review.height,
         "coverage": {k: len(v) for k, v in cov.items()},
+        "adjustment_log": {
+            "rows": log.height,
+            "by_basis": dict(log.group_by("known_basis").len().sort("known_basis").rows()),
+            "known_after_ex_open": int((log["lag_sessions"] > 0).sum()),
+            "known_on_unknown": int(log["known_on"].is_null().sum()),
+            "announced_on_found": int(log["announced_on"].is_not_null().sum()),
+        },
     }

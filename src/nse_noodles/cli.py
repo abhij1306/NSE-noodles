@@ -105,7 +105,7 @@ def build_step(layout: Layout, step: str, args: argparse.Namespace) -> None:
     elif step == "actions":
         _print("actions", actions.build(layout, curation))
     elif step == "adjusted":
-        _print("adjusted", adjusted.build(layout))
+        _print("adjusted", adjusted.build(layout, getattr(args, "as_of", None)))
     elif step == "reports":
         _print("reports", reports.write_all(layout, args.holidays))
 
@@ -152,13 +152,20 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--curation", help="curation folder (default DATA/curation)")
     build.add_argument("--rebuild", action="store_true", help="bars: re-parse every zip")
     build.add_argument("--holidays", help="reports: extra holiday list, one ISO date per line")
+    build.add_argument(
+        "--as-of",
+        type=_day,
+        help="adjusted: the series as it could have been built after this day's close",
+    )
 
     run = sub.add_parser("run", help="pull everything for the range, then build every step")
     ranged(run)
     run.add_argument("--curation")
     run.add_argument("--holidays")
     run.add_argument(
-        "--with-announcements", action="store_true", help="also pull announcements (slow)"
+        "--with-announcements",
+        action="store_true",
+        help="also pull announcements and board meetings (slow; dates each event's first notice)",
     )
 
     args = parser.parse_args(argv)
@@ -188,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
         build_step(layout, "bars", args)
         pull_indices(layout, client, args)
         args.dataset = (
-            ["corporate_actions", "announcements"]
+            ["corporate_actions", "announcements", "board_meetings"]
             if args.with_announcements
             else ["corporate_actions"]
         )

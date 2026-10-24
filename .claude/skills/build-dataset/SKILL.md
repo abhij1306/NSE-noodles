@@ -40,6 +40,10 @@ The CLI is `noodles` (`pip install -e .` in this repo). Every step is resumable 
      (`no_issue_price`, `non_simple`, `ambiguous`) go to the `research-corporate-action` skill.
    - `reports.jumps` by security: equity jumps go to the `triage-jumps` skill; rights
      entitlements and fund units are expected.
+   - `reports.adjustment_log`: `known_on_unknown` counts actions left out of as-of builds
+     (research or corrections without a source date: add the date); `known_after_ex_open`
+     counts factors a backtest could only use some sessions after the ex-date (see the
+     README's Point in time section).
 4. After curation changes (research CSVs, corrections, lineage overrides), rerun only
    `build actions`, `build adjusted`, `build reports`.
 

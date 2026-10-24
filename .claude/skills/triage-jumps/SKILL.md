@@ -34,6 +34,8 @@ is a factor problem.
    - `unclear` -> leave it, with what you checked.
 4. ETF unit splits: find the NSE circular (it names the date and old/new face value) and add a
    `split` correction with factor new / old.
+5. Give every `add` / `replace` line its last column, `known_on`: the date the source made the
+   value public (circular or filing date). Without it the fix is left out of as-of builds.
 
 ## Rules
 
