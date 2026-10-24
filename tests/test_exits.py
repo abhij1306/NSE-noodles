@@ -112,3 +112,26 @@ def test_record_notice_needs_the_record_date_that_held():
         (date(2026, 8, 19), "Record date for the purpose of Merger/HiveOf is 07-Sep-2026", "", "a")
     ]
     assert ca_db.record_notice(cut, ex, ex, pattern)[0] == date(2026, 8, 19)
+
+
+def test_disagreeing_record_dates_are_never_exitable():
+    ex = date(2026, 9, 7)
+    rows = [
+        _row("INE000A01011", ex, ex, date(2026, 8, 24)),
+        _row("INE000A01011", ex, date(2026, 9, 8), None),
+    ]
+    row = exits.calendar(rows, SESSIONS, HOLIDAYS, {}).row(0, named=True)
+    assert (row["record_date"], row["announced_on"], row["exitable"], row["reason"]) == (
+        None,
+        None,
+        False,
+        "record_dates_disagree",
+    )
+
+
+def test_record_notice_prefers_an_announcement_on_the_same_day():
+    text = "Record date for the Scheme is 07-Sep-2026"
+    day, ex = date(2026, 8, 24), date(2026, 9, 7)
+    notices = [(day, text, "", "board_meeting"), (day, text, "https://x/a.pdf", "announcement")]
+    found = ca_db.record_notice(notices, ex, ex, ca_db.NOTICE["demergers"])
+    assert found == (day, "https://x/a.pdf", "announcement")

@@ -156,15 +156,19 @@ disagree, one of them is wrong.
     exit session). Announced on the exit session itself or later, or never dated, the position
     holds through and the factor adjusts it once available. `out/demerger_exits.csv` lists every
     demerger of the feed with its exit session, whether it is exitable and why not;
-    `out/demerger_exits_asof=D.csv` lists only those announced by D, with the calendar and ISIN
-    links known by D. Why: on the ex-date the parent opens lower by the resulting companies'
+    `out/demerger_exits_asof=D.csv` lists only those announced by D, with the bars and ISIN
+    links known by D. Feed rows of one event that disagree on the record date are never
+    exitable (`record_dates_disagree`). Why: on the ex-date the parent opens lower by the resulting companies'
     value (HEG on 7 Sep 2026: previous close 728.25, open 260). On the adjusted series a backtest
     sees no drop and holds; an engine on raw prices sees a crash, stops out at a false loss, and
     the resulting shares it receives are counted nowhere. Exiting before the ex-date treats both
     alike and needs no factor that is unknown until after the event.
 41. The trading calendar is the days with a bhavcopy; past the last of them, the weekdays that
     no listed holiday names. A holiday is no session: an ex-date on a Monday exits on Friday's
-    close, one after a Monday holiday on the Friday before it.
+    close, one after a Monday holiday on the Friday before it. Holiday lists carry no publication
+    date, so a replay as of D reads them as they are now; NSE publishes the year's list before
+    the year starts, and only an unscheduled closure added after D could move a future exit
+    session in that replay.
 42. Settlement: under T+1 the ex-date is the record date (or, when the record date is not a
     session, the last session before it). A sale on the last session before the ex-date settles
     by the record date: the buyer is the holder of record and gets the resulting shares, the

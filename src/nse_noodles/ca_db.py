@@ -205,7 +205,8 @@ def record_notice(
 ) -> tuple[date | None, str, str]:
     """(day, url, source) of the earliest filing within NOTICE_DAYS before `ex`, up to and
     including the ex-date, whose text matches `pattern` and names the date `record`
-    (`parse.dates_named`); (None, "", "") when there is none or either date is unknown."""
+    (`parse.dates_named`); (None, "", "") when there is none or either date is unknown. On the
+    same day an announcement (with its attachment URL) wins over a board-meeting intimation."""
     if ex is None or record is None:
         return None, "", ""
     hits = [
@@ -215,7 +216,7 @@ def record_notice(
         and pattern.search(text)
         and record in parse.dates_named(text)
     ]
-    return min(hits) if hits else (None, "", "")
+    return min(hits, key=lambda h: (h[0], h[2] != "announcement", h[1])) if hits else (None, "", "")
 
 
 def _notices(anns: list[dict], meetings: list[dict]) -> dict[str, list[Notice]]:

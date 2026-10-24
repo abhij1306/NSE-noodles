@@ -269,7 +269,12 @@ session or later, or never dated, it holds through, and the factor adjusts it on
   changed does not count. Not found = empty = not exitable; never guessed.
 - The exit session is the last day with a bhavcopy before the ex-date; for an ex-date past the
   data, the last weekday that no listed holiday names (`curation/holidays.txt`, NSE's current
-  list, `--holidays`).
+  list, `--holidays`). Holiday lists are undated: a replay reads them as they are now, which
+  matters only for an unscheduled closure added after D.
+- Not exitable, with the `reason`: `announced_on_exit_session` (same day),
+  `announced_after_exit_session`, `announced_on_unknown`, `record_date_unknown`,
+  `record_dates_disagree` (the feed's rows of one event name different record dates),
+  `no_session_before_ex_date`.
 - Same-day is too late: deciding to sell at a session's close needs the notice before that
   session.
 - Settlement: under T+1 the ex-date is the record date (or the last session before it when the

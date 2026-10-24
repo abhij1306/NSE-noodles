@@ -112,8 +112,9 @@ def exit_status(
 
 def events(rows: Sequence[dict]) -> list[dict]:
     """One row per (isin, ex-date) of the feed's demerger rows (NSE repeats an event under
-    several purpose texts): the earliest `announced_on` and its notice; the record date only
-    when the rows agree on it."""
+    several purpose texts): the earliest `announced_on` and its notice. Rows that disagree on
+    the record date leave it, the notice and `announced_on` empty and mark the event
+    `disputed`: a notice naming one of the dates does not date the other."""
     out: dict[tuple[str, date], dict] = {}
     for r in sorted(rows, key=lambda r: (r["announced_on"] or date.max, r["symbol"])):
         if r["ex_date"] is None:
@@ -123,8 +124,15 @@ def events(rows: Sequence[dict]) -> list[dict]:
             out[key] = {k: r[k] for k in ("isin", "symbol", "ex_date", "record_date")} | {
                 k: r[k] for k in ("announced_on", "notice_source", "notice_url")
             }
-        elif out[key]["record_date"] != r["record_date"]:
-            out[key]["record_date"] = None
+            out[key]["disputed"] = False
+        elif out[key]["record_date"] != r["record_date"] or out[key]["disputed"]:
+            out[key] |= {
+                "record_date": None,
+                "announced_on": None,
+                "notice_source": "",
+                "notice_url": "",
+                "disputed": True,
+            }
     return [out[k] for k in sorted(out, key=lambda k: (k[1], k[0]))]
 
 
@@ -143,6 +151,8 @@ def calendar(
             continue
         exit_on = exit_session(sessions, holidays, e["ex_date"])
         ok, reason = exit_status(exit_on, e["announced_on"], e["record_date"])
+        if e.pop("disputed"):
+            ok, reason = False, "record_dates_disagree"
         out.append(
             {
                 "chain_isin": chain_of.get(e["isin"], e["isin"]),
