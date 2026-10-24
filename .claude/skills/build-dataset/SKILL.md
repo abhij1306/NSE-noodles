@@ -25,8 +25,9 @@ The CLI is `noodles` (`pip install -e .` in this repo). Every step is resumable 
    noodles --data D pull indices --from 2011-06-22
    noodles --data D pull nse --dataset corporate_actions --index equities sme --from 2011-01-01
    noodles --data D pull lists
-   # optional, slow: announcements give instrument-class evidence for bonuses
-   noodles --data D pull nse --dataset announcements --from 2011-01-01
+   # optional, slow: announcements give instrument-class evidence for bonuses; announcements
+   # and board meetings date demerger record-date notices (the demerger exit calendar)
+   noodles --data D pull nse --dataset announcements board_meetings --from 2011-01-01
    ```
    Or everything in order: `noodles --data D run --from 2011-06-22`.
 2. Build: `for s in bars ca-db actions hindsight reports; do noodles --data D build $s; done`
@@ -46,6 +47,9 @@ The CLI is `noodles` (`pip install -e .` in this repo). Every step is resumable 
      that never enter a replay (research or corrections without a source date: add the date
      the source shows, never an earlier one); `available_after_ex_date` counts events a
      backtest could only use some sessions after the ex-date (README, Point in time).
+   - `reports.demerger_exits`: demergers exitable before their ex-date, and why the others are
+     not. `not_exitable:announced_on_unknown` means no pulled filing writes the record date:
+     pull announcements and board meetings for the range, or accept that those hold through.
    - `actions.disputed` / review `demerger_versions_disagree`: a demerger whose ratio-priced
      factor is more than 10% from its ex-date gap; research the ratio and the dates.
    - `actions.withdrawn_from_ledger`: versions an earlier build produced and this one did not

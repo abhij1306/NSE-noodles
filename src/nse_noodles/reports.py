@@ -14,6 +14,8 @@ combined review list (all written under `out/`, all also printed as counts).
   (`announced_on`), its ex-date, when that version could first be used (`available_at`,
   `available_basis`) and the sessions between ex-date and then (`lag_sessions`).
 - Factor versions: every version of every event, with its value, basis, timestamps and band.
+- Demerger exits: the session a position held into each demerger exits at, or why it cannot
+  (`exits`).
 """
 
 from __future__ import annotations
@@ -22,16 +24,14 @@ import json
 from bisect import bisect_left
 from collections import defaultdict
 from datetime import date, datetime, timedelta
-from pathlib import Path
 
 import duckdb
 import polars as pl
 
+from . import exits
 from .bars import sessions as bar_sessions
-from .curation import read_holidays
 from .factors import JUMP_TOL
 from .layout import Layout, NotFoundMemo, atomic_write
-from .parse import nse_date
 
 JUMP_MAX_DAYS = 14  # a relisting after a longer suspension may jump on its own
 HINT_DAYS = 7
@@ -125,18 +125,7 @@ def coverage(layout: Layout, holidays_file: str | None = None) -> dict[str, list
     if not sessions:
         return {}
     memo = NotFoundMemo(layout.raw / "not_found.json")
-    listed = read_holidays(layout.root / "curation" / "holidays.txt")
-    if holidays_file:
-        listed |= read_holidays(Path(holidays_file))
-    live = layout.lists / "holidays.json"
-    if live.exists():
-        try:
-            for row in json.loads(live.read_text(encoding="utf-8")).get("CM", []):
-                day = nse_date(str(row.get("tradingDate", "")))
-                if day:
-                    listed.add(day)
-        except (ValueError, AttributeError):
-            pass
+    listed = exits.listed_holidays(layout, holidays_file)
     have = set(sessions)
     out: dict[str, list[str]] = {
         k: []
@@ -223,6 +212,7 @@ def write_all(layout: Layout, holidays_file: str | None = None) -> dict[str, obj
     with duckdb.connect(str(layout.db), read_only=True) as con:
         all_versions = con.sql(VERSIONS_SQL).pl()
     atomic_write(layout.out / "factor_versions.csv", lambda tmp: all_versions.write_csv(tmp))
+    demerger_exits = exits.write(layout, holidays_file)
     by_security = j.group_by("security").len().sort("security").rows() if j.height else []
     return {
         "jumps": j.height,
@@ -238,6 +228,7 @@ def write_all(layout: Layout, holidays_file: str | None = None) -> dict[str, obj
             "available_at_unknown": int(log["available_at"].is_null().sum()),
             "announced_on_found": int(log["announced_on"].is_not_null().sum()),
         },
+        "demerger_exits": demerger_exits,
         "factor_versions": {
             "rows": all_versions.height,
             "events_with_several": int(

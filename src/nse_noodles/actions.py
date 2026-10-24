@@ -31,7 +31,8 @@ factor and for a dividend; the close SETTLE_SESSIONS on for a demerger gap accep
 held; the resulting company's first close for a ratio-priced demerger; the research
 `source_date` (end of that day) for a value only research supplies; a correction's `known_on`.
 Null when a source it needs is undated: such a version never enters a replay. `announced_on`
-(from `ca_db`) is the first NSE filing found for the event.
+(from `ca_db`) is the first NSE filing found for the event; for a demerger, its record-date
+notice.
 """
 
 from __future__ import annotations

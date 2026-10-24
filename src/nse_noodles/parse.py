@@ -43,6 +43,36 @@ def nse_date(raw: str | None) -> date | None:
         return None
 
 
+_MONTH = r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?"
+_ORDINAL = r"(\d{1,2})(?:st|nd|rd|th)?"
+_NAMED_DATES = (  # (pattern, order of day / month / year groups)
+    (
+        re.compile(rf"\b{_ORDINAL}[\s\-]*(?:of\s+|day\s+of\s+)?{_MONTH}[\s,\-]*(\d{{4}})\b", re.I),
+        "dmy",
+    ),
+    (re.compile(rf"\b{_MONTH}\s+{_ORDINAL},?\s*(\d{{4}})\b", re.I), "mdy"),
+    (re.compile(r"\b(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})\b"), "dmy"),  # Indian order: day first
+    (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "ymd"),
+)
+
+
+def dates_named(text: str) -> set[date]:
+    """Every calendar date written in a filing's text: `5th September, 2026`, `September 05,
+    2026`, `05-Sep-2026`, `05/09/2026` (day first, as Indian filings write it), `2026-09-05`.
+    A string that is no valid date is ignored."""
+    out = set()
+    for pattern, order in _NAMED_DATES:
+        for m in pattern.finditer(text):
+            parts = dict(zip(order, m.groups(), strict=True))
+            month = parts["m"].lower()
+            month_no = _MONTHS.index(month) + 1 if month in _MONTHS else int(month)
+            try:
+                out.add(date(int(parts["y"]), month_no, int(parts["d"])))
+            except ValueError:
+                continue
+    return out
+
+
 def money(raw: str | None) -> Decimal | None:
     try:
         value = Decimal((raw or "").replace(",", "").strip())

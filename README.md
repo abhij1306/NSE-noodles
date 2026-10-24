@@ -123,9 +123,10 @@ noodles --data ~/nse-data run --from 2011-06-22
 Keep `--data` outside any git repository. At the default pace the full history takes several
 hours (about 3,900 bhavcopy files plus as many index files at one request per 2 s, and about
 380 monthly corporate-action requests for equities and SME). Announcements and board meetings
-(`pull nse --dataset announcements board_meetings`, or `run --with-announcements`) are optional;
-they add instrument-class evidence for bonuses and date each event's first notice
-(`announced_on`).
+(`pull nse --dataset announcements board_meetings`, or `run --with-announcements`) are optional
+for the series; they add instrument-class evidence for bonuses and date each event's notice
+(`announced_on`). The [demerger exit calendar](#held-positions) needs them: without the filings
+no demerger has a dated record-date notice, so none is exitable.
 
 Weekend special sessions (Budget Saturdays, Muhurat Sundays) are fetched with
 `pull bhavcopy --extra-days YYYY-MM-DD ...`.
@@ -147,6 +148,7 @@ Under `--data`:
 | `out/review.csv` | Everything waiting for a human: corporate-action rows and ISIN successions, with reason and evidence |
 | `out/adjustment_log.csv` | Every event at its hindsight version: `symbol, action_type, version, factor, cash, basis, method, source, announced_on, notice_url, ex_date, source_published_at, first_observed_at, available_at, available_basis, lag_sessions` |
 | `out/factor_versions.csv` | Every version of every event: `version, status, value, cash, basis, raw_gap, band_low, band_high`, the three timestamps, `available_basis`, `version_id` |
+| `out/demerger_exits.csv`, `out/demerger_exits_asof=D.csv` | The [demerger exit calendar](#held-positions): `chain_isin, isin, symbol, ex_date, record_date, announced_on, notice_source, notice_url, exit_session, exitable, reason`; as of D only what was announced by D (`build replay --as-of D` writes it) |
 | `out/coverage.json` | Weekdays by bucket (`holiday, gap, unaccounted, on_listed_holiday, weekend_session`) and `index_missing` |
 | `noodles.duckdb` | All tables below |
 
@@ -157,7 +159,8 @@ Tables in `noodles.duckdb`:
 | `ca_feed` | `symbol, company, series, isin, subject, ex_date, record_date, face_value, market` |
 | `splits_bonus` | feed columns + `legs` (`bonus=1/2;split=1/5`), `parse_status`, `instrument_class`, `classification_source`, `evidence`, `evidence_url` |
 | `rights_issues` | feed columns + `ratio_new, ratio_held, issue_price, parse_status` |
-| `demergers`, `bonus_instruments` | feed columns (ratios and values come from research) |
+| `demergers` | feed columns + `announced_on, notice_url, notice_source` (the record-date notice; ratios come from research) |
+| `bonus_instruments` | feed columns (values come from research) |
 | `dividends` | `isin, symbol, ex_date, amount, kinds, status, subjects` (one row per ISIN and ex-date) |
 | `announcements`, `board_meetings` | as NSE gives them (when pulled) |
 | `lineage` | `old_isin, new_isin, effective, status (linked/review), reason, evidence, known_on` (the new ISIN's first day + 10 days: the window the link rules read) |
@@ -180,7 +183,7 @@ a version of value 1). Each version carries three times (India Standard Time):
 
 | Time | Meaning |
 |---|---|
-| `source_published_at` | When the source of its terms was published: the research row's `source_date`, the correction's `known_on`, or the first NSE filing found for the event (`announced_on`). Empty = unknown |
+| `source_published_at` | When the source of its terms was published: the research row's `source_date`, the correction's `known_on`, or the event's NSE notice (`announced_on`; for a demerger its record-date notice). Empty = unknown |
 | `first_observed_at` | When this pipeline first produced the version (from the ledger). A history built today is first observed today: a replay is a reconstruction, not a record of what was seen live |
 | `available_at` | The earliest time the value and the rule that accepts it could have been known: the latest of every price and source it reads. **Empty = unknown, and then it never enters a replay.** A date-only source counts from the end of its day; no time is ever moved earlier than its evidence |
 
@@ -245,6 +248,40 @@ market and ignores the stock's sector; for an F&O stock the index open (09:15) c
 minutes before the special pre-open sets the stock's open. The ratio version carries the
 resulting company's own listing pricing. The band is a spread of estimates, not a confidence
 interval.
+
+### Held positions
+
+A backtest on the adjusted series and an engine on raw prices disagree about a position held
+into a demerger. On HEG's ex-date (7 Sep 2026) the parent opened at 260 after a 728.25 close: the
+adjusted series shows no drop and holds through; raw prices show a 64% crash, a stop at 650
+fills at 260 for a false loss, and the HEG Graphite shares the holder receives are counted
+nowhere. The rule that treats both alike, and needs no factor the market sets only on the day:
+
+**A position held into a demerger exits at the close of the last trading session before the
+ex-date, if the record date was announced strictly before that session.** Announced on that
+session or later, or never dated, it holds through, and the factor adjusts it once available.
+
+- `announced_on` of a demerger is the date of the first NSE filing (announcement or board-meeting
+  intimation, pulled with `--dataset announcements board_meetings`) that says record date, names
+  the demerger, scheme or hive-off, and writes the record date that held as a date (HEG: the
+  "Record Date" filing of 24 Aug 2026, "fixed ... as 07-Sep-2026"). A filing naming a date later
+  changed does not count. Not found = empty = not exitable; never guessed.
+- The exit session is the last day with a bhavcopy before the ex-date; for an ex-date past the
+  data, the last weekday that no listed holiday names (`curation/holidays.txt`, NSE's current
+  list, `--holidays`).
+- Same-day is too late: deciding to sell at a session's close needs the notice before that
+  session.
+- Settlement: under T+1 the ex-date is the record date (or the last session before it when the
+  record date is a holiday or weekend). A sale on the last session before the ex-date settles by
+  the record date, so the buyer gets the resulting shares and the seller does not; that is
+  intended, the sale price includes them. A sale on the ex-date still gets them.
+- In a backtest, read the exit calendar as of D (`out/demerger_exits_asof=D.csv`, written by
+  `build replay --as-of D`): it lists only demergers announced by D.
+- Splits and bonuses: hold and rescale stops by the factor. Rights: your choice. The TERP factor
+  assumes the entitlement's value reaches the holder, which happens only by selling the
+  entitlements or subscribing; otherwise exit before the ex-date or book the gap, and say which.
+- Re-entry needs nothing special: once the factor is available the replay applies it. Until
+  then the replay shows the raw gap of that chain.
 
 ## Review lists
 
@@ -326,7 +363,8 @@ add. It is input, never output, and is re-applied on every rebuild.
 - **Hindsight is the default output.** Use the replay for anything point in time. Feed rows
   carry no publication time of their own (NSE's broadcast date is mostly empty), so their
   versions' `available_at` rests on the ex-date open; `announced_on` is only as good as the
-  announcements pulled; research and corrections without a source date never enter a replay
+  announcements pulled, and a record-date filing whose text does not write the date (only an
+  attachment does) is not found, so that demerger is not exitable; research and corrections without a source date never enter a replay
   rather than being dated by guess. A replay of a history built today is a reconstruction
   (`first_observed_at` says when the pipeline first saw each version). A link can become a
   review case when a competing successor appears up to 30 sessions later; a replay of the full
