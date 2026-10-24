@@ -4,7 +4,8 @@
     noodles pull indices   --data D --from ... --to ...      (days that have a bhavcopy)
     noodles pull nse       --data D --dataset corporate_actions --from ... --to ...
     noodles pull lists     --data D                          (symbol/name changes, holidays)
-    noodles build bars | ca-db | actions | adjusted | reports   --data D
+    noodles build bars | ca-db | actions | hindsight | reports  --data D
+    noodles build replay   --data D --as-of YYYY-MM-DD          (point-in-time replay as of D)
     noodles run            --data D --from ... --to ...      (everything, in order)
 
 Every step is resumable and idempotent: rerun it after an interruption.
@@ -104,8 +105,12 @@ def build_step(layout: Layout, step: str, args: argparse.Namespace) -> None:
         _print("ca-db", ca_db.build(layout))
     elif step == "actions":
         _print("actions", actions.build(layout, curation))
-    elif step == "adjusted":
-        _print("adjusted", adjusted.build(layout, getattr(args, "as_of", None)))
+    elif step == "hindsight":
+        _print("hindsight", adjusted.build(layout))
+    elif step == "replay":
+        if args.as_of is None:
+            raise SystemExit("build replay needs --as-of YYYY-MM-DD")
+        _print(f"replay as of {args.as_of}", adjusted.build(layout, args.as_of))
     elif step == "reports":
         _print("reports", reports.write_all(layout, args.holidays))
 
@@ -148,14 +153,16 @@ def main(argv: list[str] | None = None) -> int:
     pull.add_parser("lists")
 
     build = sub.add_parser("build")
-    build.add_argument("step", choices=["bars", "ca-db", "actions", "adjusted", "reports"])
+    build.add_argument(
+        "step", choices=["bars", "ca-db", "actions", "hindsight", "replay", "reports"]
+    )
     build.add_argument("--curation", help="curation folder (default DATA/curation)")
     build.add_argument("--rebuild", action="store_true", help="bars: re-parse every zip")
     build.add_argument("--holidays", help="reports: extra holiday list, one ISO date per line")
     build.add_argument(
         "--as-of",
         type=_day,
-        help="adjusted: the series as it could have been built after this day's close",
+        help="replay: the point-in-time series as it could have been built after this day",
     )
 
     run = sub.add_parser("run", help="pull everything for the range, then build every step")
@@ -202,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
         args.index = ["equities", "sme"]
         pull_nse(layout, client, args)
         _print("lists", nse_json.pull_lists(layout, client))
-    for step in ("bars", "ca-db", "actions", "adjusted", "reports"):
+    for step in ("bars", "ca-db", "actions", "hindsight", "reports"):
         build_step(layout, step, args)
     return 0
 

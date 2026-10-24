@@ -10,9 +10,10 @@ combined review list (all written under `out/`, all also printed as counts).
   holiday list names the day) or unaccounted (never asked, or the request failed). Weekend
   sessions (Budget Saturdays, Muhurat) are listed. Index days missing after the first index
   day are listed too.
-- Adjustment log: every accepted action with when the market first heard of it
-  (`announced_on`), its ex-date, and the first date a backtest could have used its factor
-  (`known_on`, `known_basis`), with the sessions between ex-date and `known_on` (`lag_sessions`).
+- Adjustment log: every event at its hindsight version with when the market first heard of it
+  (`announced_on`), its ex-date, when that version could first be used (`available_at`,
+  `available_basis`) and the sessions between ex-date and then (`lag_sessions`).
+- Factor versions: every version of every event, with its value, basis, timestamps and band.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from __future__ import annotations
 import json
 from bisect import bisect_left
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import duckdb
@@ -57,7 +58,7 @@ def _by_key(rows: list[tuple]) -> dict[tuple[str, str], list[tuple[date, str]]]:
 
 
 def jumps(layout: Layout) -> pl.DataFrame:
-    adj = pl.scan_parquet(layout.out / "adjusted_daily.parquet")
+    adj = pl.scan_parquet(layout.out / "hindsight_daily.parquet")
     found = (
         adj.select(
             "chain_isin", "isin", "symbol", "date", "adj_open", "adj_close", "ordinary_equity"
@@ -174,18 +175,25 @@ def coverage(layout: Layout, holidays_file: str | None = None) -> dict[str, list
 
 
 LOG_SQL = """
-SELECT chain_isin, isin, symbol, action_type, factor, cash, method, source, announced_on,
-       notice_url, ex_date, known_on, known_basis, text
+SELECT chain_isin, isin, symbol, action_type, version, value AS factor, cash, basis, method,
+       source, announced_on, notice_url, ex_date, source_published_at, first_observed_at,
+       available_at, available_basis, text
 FROM actions ORDER BY ex_date, chain_isin, action_type
+"""
+VERSIONS_SQL = """
+SELECT chain_isin, isin, symbol, ex_date, action_type, version, status, value, cash, basis,
+       raw_gap, band_low, band_high, source_published_at, first_observed_at, available_at,
+       available_basis, method, version_id
+FROM factor_versions ORDER BY ex_date, chain_isin, action_type, version
 """
 
 
-def lag_sessions(sessions: list[date], ex: date, known: date | None) -> int | None:
-    """Sessions from the ex-date's session to the session of `known` (0: known at the ex-date
-    open); None when `known` is unknown."""
+def lag_sessions(sessions: list[date], ex: date, known: datetime | None) -> int | None:
+    """Sessions from the ex-date's session to the session of `known` (0: known on the ex-date
+    itself); None when `known` is unknown."""
     if known is None:
         return None
-    return max(0, bisect_left(sessions, known) - bisect_left(sessions, ex))
+    return max(0, bisect_left(sessions, known.date()) - bisect_left(sessions, ex))
 
 
 def adjustment_log(layout: Layout) -> pl.DataFrame:
@@ -193,7 +201,8 @@ def adjustment_log(layout: Layout) -> pl.DataFrame:
         log = con.sql(LOG_SQL).pl()
     sessions = bar_sessions(layout)
     lags = [
-        lag_sessions(sessions, e, k) for e, k in zip(log["ex_date"], log["known_on"], strict=True)
+        lag_sessions(sessions, e, k)
+        for e, k in zip(log["ex_date"], log["available_at"], strict=True)
     ]
     return log.with_columns(pl.Series("lag_sessions", lags, dtype=pl.Int64))
 
@@ -211,6 +220,9 @@ def write_all(layout: Layout, holidays_file: str | None = None) -> dict[str, obj
     atomic_write(layout.out / "review.csv", lambda tmp: review.write_csv(tmp))
     log = adjustment_log(layout)
     atomic_write(layout.out / "adjustment_log.csv", lambda tmp: log.write_csv(tmp))
+    with duckdb.connect(str(layout.db), read_only=True) as con:
+        all_versions = con.sql(VERSIONS_SQL).pl()
+    atomic_write(layout.out / "factor_versions.csv", lambda tmp: all_versions.write_csv(tmp))
     by_security = j.group_by("security").len().sort("security").rows() if j.height else []
     return {
         "jumps": j.height,
@@ -219,9 +231,20 @@ def write_all(layout: Layout, holidays_file: str | None = None) -> dict[str, obj
         "coverage": {k: len(v) for k, v in cov.items()},
         "adjustment_log": {
             "rows": log.height,
-            "by_basis": dict(log.group_by("known_basis").len().sort("known_basis").rows()),
-            "known_after_ex_open": int((log["lag_sessions"] > 0).sum()),
-            "known_on_unknown": int(log["known_on"].is_null().sum()),
+            "by_available_basis": dict(
+                log.group_by("available_basis").len().sort("available_basis").rows()
+            ),
+            "available_after_ex_date": int((log["lag_sessions"] > 0).sum()),
+            "available_at_unknown": int(log["available_at"].is_null().sum()),
             "announced_on_found": int(log["announced_on"].is_not_null().sum()),
+        },
+        "factor_versions": {
+            "rows": all_versions.height,
+            "events_with_several": int(
+                (
+                    all_versions.group_by("chain_isin", "ex_date", "action_type").len()["len"] > 1
+                ).sum()
+            ),
+            "disputed": int((all_versions["status"] == "disputed").sum()),
         },
     }

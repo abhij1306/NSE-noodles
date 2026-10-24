@@ -7,11 +7,14 @@
     raw/not_found.json                    archive days NSE answered 404 for (holiday candidates)
     bars/date=YYYY-MM-DD.parquet          parsed bhavcopy, one row per ISIN and day
     index/date=YYYY-MM-DD.parquet         parsed index levels
-    noodles.duckdb                        corporate actions, lineage, factors, review lists
-    out/                                  the published outputs (adjusted series, reports)
+    noodles.duckdb                        corporate actions, lineage, factor versions, review lists
+    ledger/factor_versions.jsonl          every factor version ever produced, append-only
+    out/                                  the published outputs (series, reports)
 
-Every file is written to a temporary name and renamed, so an interrupted run never leaves half
-a file and a rerun skips what is already there.
+Everything but `raw/` and `ledger/` is rebuilt from them; the ledger holds when each factor
+version was first observed, which no rebuild can recreate. Every other file is written to a
+temporary name and renamed, so an interrupted run never leaves half a file and a rerun skips
+what is already there.
 """
 
 from __future__ import annotations
@@ -75,6 +78,10 @@ class Layout:
     @property
     def db(self) -> Path:
         return self.root / "noodles.duckdb"
+
+    @property
+    def ledger(self) -> Path:
+        return self.root / "ledger" / "factor_versions.jsonl"
 
     @property
     def out(self) -> Path:

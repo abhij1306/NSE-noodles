@@ -36,7 +36,8 @@ is a factor problem.
 4. ETF unit splits: find the NSE circular (it names the date and old/new face value) and add a
    `split` correction with factor new / old.
 5. Give every `add` / `replace` line its last column, `known_on`: the date the source made the
-   value public (circular or filing date). Without it the fix is left out of as-of builds.
+   value public (circular or filing date). A correction adds a version, available from that
+   date; without it the fix never enters a point-in-time replay.
 
 ## Rules
 
@@ -48,5 +49,5 @@ is a factor problem.
 
 ## Finish
 
-Rerun `noodles --data D build actions`, `build adjusted`, `build reports`. Report the jump counts
+Rerun `noodles --data D build actions`, `build hindsight`, `build reports`. Report the jump counts
 before and after by `security`, and list the genuine moves you left with one line each.
