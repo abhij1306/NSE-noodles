@@ -5,7 +5,7 @@
     noodles pull nse       --data D --dataset corporate_actions --from ... --to ...
     noodles pull lists     --data D                          (symbol/name changes, holidays)
     noodles build bars | ca-db | actions | hindsight | reports  --data D
-    noodles build replay   --data D --as-of YYYY-MM-DD          (point-in-time replay as of D)
+    noodles build replay   --data D --as-of YYYY-MM-DD   (point-in-time replay and exit calendar)
     noodles run            --data D --from ... --to ...      (everything, in order)
 
 Every step is resumable and idempotent: rerun it after an interruption.
@@ -20,7 +20,7 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
-from . import actions, adjusted, bhavcopy, ca_db, indices, nse_json, reports
+from . import actions, adjusted, bhavcopy, ca_db, exits, indices, nse_json, reports
 from .http import DEFAULT_INTERVAL, NseClient
 from .layout import Layout
 
@@ -111,6 +111,7 @@ def build_step(layout: Layout, step: str, args: argparse.Namespace) -> None:
         if args.as_of is None:
             raise SystemExit("build replay needs --as-of YYYY-MM-DD")
         _print(f"replay as of {args.as_of}", adjusted.build(layout, args.as_of))
+        _print(f"demerger exits as of {args.as_of}", exits.write(layout, args.holidays, args.as_of))
     elif step == "reports":
         _print("reports", reports.write_all(layout, args.holidays))
 
@@ -158,7 +159,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     build.add_argument("--curation", help="curation folder (default DATA/curation)")
     build.add_argument("--rebuild", action="store_true", help="bars: re-parse every zip")
-    build.add_argument("--holidays", help="reports: extra holiday list, one ISO date per line")
+    build.add_argument(
+        "--holidays", help="reports, replay: extra holiday list, one ISO date per line"
+    )
     build.add_argument(
         "--as-of",
         type=_day,

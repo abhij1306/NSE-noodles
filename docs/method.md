@@ -134,9 +134,13 @@ disagree, one of them is wrong.
     before D. An unknown `available_at` never qualifies. Backtests read the replay.
 35. Adding a version available after D never changes the replay as of D (tested on the pure
     selection, `versions.select`).
-36. `announced_on` is the first NSE filing naming the event within 180 days before the ex-date.
-    It is information only; NSE's `caBroadcastDate` is not used (mostly empty, often after the
-    ex-date).
+36. `announced_on` is the date of an NSE filing (announcement or board-meeting intimation) of the
+    symbol within 180 days before the ex-date, up to the ex-date. For a split, bonus, rights
+    issue or dividend: the first filing naming the event (information only). For a demerger: the
+    first filing that says record date, names the demerger, scheme, merger or hive-off (NSE's
+    template reads "Merger/HiveOff"), and writes the record date that held (the feed's) as a
+    date; a filing naming an earlier, later changed date does not count. Nothing found leaves it empty, never guessed. NSE's `caBroadcastDate` is not
+    used (mostly empty, often after the ex-date).
 
 ## Coverage
 
@@ -144,3 +148,42 @@ disagree, one of them is wrong.
     list names it) or unaccounted (never fetched). A missing day is never assumed a holiday.
 38. Weekend sessions (Budget Saturdays, Muhurat) are sessions when a bhavcopy exists.
 39. Index history starts later than the bars; only days after an index's first day count.
+
+## Held positions
+
+40. A position held into a demerger exits at the close of the last trading session before the
+    ex-date, when its record date was announced strictly before that session (`announced_on` <
+    exit session). Announced on the exit session itself or later, or never dated, the position
+    holds through and the factor adjusts it once available. `out/demerger_exits.csv` lists every
+    demerger of the feed with its exit session, whether it is exitable and why not;
+    `out/demerger_exits_asof=D.csv` lists only those announced by D, with the bars and ISIN
+    links known by D. Feed rows of one event that disagree on the record date are never
+    exitable (`record_dates_disagree`). Why: on the ex-date the parent opens lower by the resulting companies'
+    value (HEG on 7 Sep 2026: previous close 728.25, open 260). On the adjusted series a backtest
+    sees no drop and holds; an engine on raw prices sees a crash, stops out at a false loss, and
+    the resulting shares it receives are counted nowhere. Exiting before the ex-date treats both
+    alike and needs no factor that is unknown until after the event.
+41. The trading calendar is the days with a bhavcopy; past the last of them, the weekdays that
+    no listed holiday names. A holiday is no session: an ex-date on a Monday exits on Friday's
+    close, one after a Monday holiday on the Friday before it. Holiday lists carry no publication
+    date, so a replay as of D reads them as they are now; NSE publishes the year's list before
+    the year starts, and only an unscheduled closure added after D could move a future exit
+    session in that replay.
+42. Settlement: under T+1 the ex-date is the record date (or, when the record date is not a
+    session, the last session before it). A sale on the last session before the ex-date settles
+    by the record date: the buyer is the holder of record and gets the resulting shares, the
+    seller does not. That is intended: the sale price includes their value. A sale on the
+    ex-date settles after the record date, so the seller still gets them. Under T+2 (before
+    2023) the ex-date was a session before the record date; a sale before the ex-date gave up
+    the entitlement then too, so the rule is defined on the ex-date, not the record date.
+43. Splits and bonuses: hold, and rescale the stop and any price level by the factor from its
+    ex-date (the replay applies it from its `available_at`). No value leaves the position.
+44. Rights: the user's choice, not the dataset's. The rights factor (TERP) assumes the
+    entitlement's value reaches the holder, which a position gets only by selling the
+    entitlements (`-RE`) or subscribing. A strategy that does neither loses that value on the
+    ex-date; it may instead exit before the ex-date as for a demerger, or hold and book the
+    gap. Say which in the backtest.
+45. Re-entry after a demerger needs no special rule: once the factor is available the replay
+    applies it (rule 34). Until then the replay as of D shows the raw gap of a chain whose
+    demerger ex-date is on or before D; a signal read there reads the event, not the market
+    (the exit calendar as of D lists the demergers announced by D).

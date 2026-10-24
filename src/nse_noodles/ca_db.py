@@ -13,11 +13,19 @@ Tables in `noodles.duckdb` (all rebuilt from the raw shards, so a rerun gives th
 - `dividends`: one row per (ISIN, ex-date): the rupees per share, or why it is not trusted.
 - `announcements`, `board_meetings`: when those shards were pulled.
 
-Each event row also carries `announced_on` / `notice_url`: the first NSE filing of the symbol
-(announcement or board-meeting intimation) in the NOTICE_DAYS before the ex-date whose text names
-the event (`first_notice`). It is when the market first heard of the event, empty when the
-filings for that window were not pulled. NSE's `caBroadcastDate` is not used: it is mostly empty
-and, where set, often later than the ex-date.
+Each event row also carries `announced_on` / `notice_url` (and, for a demerger,
+`notice_source`: announcement or board_meeting), from the NSE filings of the symbol
+(announcements and board-meeting intimations) in the NOTICE_DAYS before the ex-date, empty when
+the filings for that window were not pulled:
+- splits, bonuses, rights, bonus instruments, dividends: the first filing whose text names the
+  event (`first_notice`), when the market first heard of it;
+- demergers: the first filing whose text says record date, names the demerger, scheme or
+  hive-off (NSE's template: "Merger/HiveOff"), AND writes the record date that held, the feed's,
+  as a date (`record_notice`). That is when a holder could first know the last session to sell
+  before the ex-date (see `exits`). A filing naming another record date (one later changed) or
+  none does not count; nothing found leaves it empty, never guessed.
+NSE's `caBroadcastDate` is not used: it is mostly empty and, where set, often later than the
+ex-date.
 
 Every cell is untrusted text: it is parsed by `nse_noodles.parse`, never executed or trusted.
 """
@@ -47,7 +55,14 @@ NOTICE_DAYS = 180  # an event's first filing falls this many days before its ex-
 NOTICE = {
     "splits_bonus": re.compile(r"split|sub-?division|bonus", re.I),
     "rights_issues": re.compile(r"\brights?\b", re.I),
-    "demergers": re.compile(r"demerger|scheme\s+of\s+arrangement|composite\s+scheme", re.I),
+    # a demerger's record-date notice (`record_notice`): "Record date ... pursuant to the Scheme",
+    # "... for the purpose of Merger/HiveOff" (NSE's template, at times cut to "Merger/HiveOf"),
+    # "... as the Demerger Record Date"
+    "demergers": re.compile(
+        r"record\s+date.*(?:merger|scheme|arrangement|hive[\s-]*of)"
+        r"|(?:merger|scheme|arrangement|hive[\s-]*of).*record\s+date",
+        re.I | re.S,
+    ),
     "bonus_instruments": re.compile(r"bonus", re.I),
     "dividends": re.compile(r"dividend", re.I),
 }
@@ -167,31 +182,55 @@ def _board_meetings(layout: Layout) -> list[dict]:
     ]
 
 
+Notice = tuple[date, str, str, str]  # (day, text, url, source: announcement | board_meeting)
+
+
 def first_notice(
-    notices: list[tuple[date, str, str]], ex: date | None, pattern: re.Pattern[str]
+    notices: list[Notice], ex: date | None, pattern: re.Pattern[str]
 ) -> tuple[date | None, str]:
-    """(day, url) of the earliest (day, text, url) filing within NOTICE_DAYS before `ex`, up to
-    and including the ex-date, whose text matches `pattern`; (None, "") when there is none."""
+    """(day, url) of the earliest (day, text, url, ...) filing within NOTICE_DAYS before `ex`, up
+    to and including the ex-date, whose text matches `pattern`; (None, "") when there is none."""
     if ex is None:
         return None, ""
     hits = [
         (day, url)
-        for day, text, url in notices
+        for day, text, url, *_ in notices
         if 0 <= (ex - day).days <= NOTICE_DAYS and pattern.search(text)
     ]
     return min(hits) if hits else (None, "")
 
 
-def _notices(anns: list[dict], meetings: list[dict]) -> dict[str, list[tuple[date, str, str]]]:
-    out: dict[str, list[tuple[date, str, str]]] = defaultdict(list)
+def record_notice(
+    notices: list[Notice], ex: date | None, record: date | None, pattern: re.Pattern[str]
+) -> tuple[date | None, str, str]:
+    """(day, url, source) of the earliest filing within NOTICE_DAYS before `ex`, up to and
+    including the ex-date, whose text matches `pattern` and names the date `record`
+    (`parse.dates_named`); (None, "", "") when there is none or either date is unknown. On the
+    same day an announcement (with its attachment URL) wins over a board-meeting intimation."""
+    if ex is None or record is None:
+        return None, "", ""
+    hits = [
+        (day, url, source)
+        for day, text, url, source in notices
+        if 0 <= (ex - day).days <= NOTICE_DAYS
+        and pattern.search(text)
+        and record in parse.dates_named(text)
+    ]
+    return min(hits, key=lambda h: (h[0], h[2] != "announcement", h[1])) if hits else (None, "", "")
+
+
+def _notices(anns: list[dict], meetings: list[dict]) -> dict[str, list[Notice]]:
+    out: dict[str, list[Notice]] = defaultdict(list)
     for a in anns:
         day = _an_dt(a["announced_at"])
         if day is not None:
-            out[a["symbol"]].append((day, f"{a['category']} {a['text']}", a["file"]))
+            text = f"{a['category']} {a['text']}"
+            out[a["symbol"]].append((day, text, a["file"], "announcement"))
     for m in meetings:
         day = _an_dt(m["intimated_at"])
         if day is not None:
-            out[m["symbol"]].append((day, f"{m['purpose']} {m['description']}", ""))
+            text = f"{m['purpose']} {m['description']}"
+            out[m["symbol"]].append((day, text, "", "board_meeting"))
     return out
 
 
@@ -288,7 +327,12 @@ def build(layout: Layout) -> dict[str, int]:
     }
     for name, pattern in NOTICE.items():
         for row in tables[name]:
-            day, url = first_notice(notices.get(row["symbol"], []), row["ex_date"], pattern)
+            filed = notices.get(row["symbol"], [])
+            if name == "demergers":
+                day, url, source = record_notice(filed, row["ex_date"], row["record_date"], pattern)
+                row["notice_source"] = source
+            else:
+                day, url = first_notice(filed, row["ex_date"], pattern)
             row["announced_on"], row["notice_url"] = day, url
     counts = {}
     layout.root.mkdir(parents=True, exist_ok=True)
