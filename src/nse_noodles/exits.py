@@ -162,8 +162,8 @@ def write(
     with duckdb.connect(str(layout.db), read_only=True) as con:
         has = con.execute(
             "SELECT count(*) FROM information_schema.tables WHERE table_name = 'demergers'"
-        ).fetchone()
-        rows = con.sql("SELECT * FROM demergers").pl().to_dicts() if has and has[0] else []
+        ).fetchall()[0][0]
+        rows = con.sql("SELECT * FROM demergers").pl().to_dicts() if has else []
         if as_of is None:
             cmap = con.sql("SELECT isin, chain_isin FROM chain_map").pl()
         else:

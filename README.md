@@ -263,7 +263,8 @@ session or later, or never dated, it holds through, and the factor adjusts it on
 
 - `announced_on` of a demerger is the date of the first NSE filing (announcement or board-meeting
   intimation, pulled with `--dataset announcements board_meetings`) that says record date, names
-  the demerger, scheme or hive-off, and writes the record date that held as a date (HEG: the
+  the demerger, scheme, merger or hive-off (NSE's template reads "Merger/HiveOff"), and writes
+  the record date that held as a date (HEG: the
   "Record Date" filing of 24 Aug 2026, "fixed ... as 07-Sep-2026"). A filing naming a date later
   changed does not count. Not found = empty = not exitable; never guessed.
 - The exit session is the last day with a bhavcopy before the ex-date; for an ex-date past the

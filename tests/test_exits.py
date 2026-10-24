@@ -108,3 +108,7 @@ def test_record_notice_needs_the_record_date_that_held():
     assert ca_db.record_notice(notices, ex, ex, pattern) == (date(2026, 8, 24), "ok", "a")
     assert ca_db.record_notice(notices, ex, None, pattern) == (None, "", "")
     assert ca_db.record_notice(notices[:2], ex, ex, pattern) == (None, "", "")
+    cut = [
+        (date(2026, 8, 19), "Record date for the purpose of Merger/HiveOf is 07-Sep-2026", "", "a")
+    ]
+    assert ca_db.record_notice(cut, ex, ex, pattern)[0] == date(2026, 8, 19)

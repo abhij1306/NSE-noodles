@@ -137,9 +137,9 @@ disagree, one of them is wrong.
 36. `announced_on` is the date of an NSE filing (announcement or board-meeting intimation) of the
     symbol within 180 days before the ex-date, up to the ex-date. For a split, bonus, rights
     issue or dividend: the first filing naming the event (information only). For a demerger: the
-    first filing that says record date, names the demerger, scheme or hive-off, and writes the
-    record date that held (the feed's) as a date; a filing naming an earlier, later changed date
-    does not count. Nothing found leaves it empty, never guessed. NSE's `caBroadcastDate` is not
+    first filing that says record date, names the demerger, scheme, merger or hive-off (NSE's
+    template reads "Merger/HiveOff"), and writes the record date that held (the feed's) as a
+    date; a filing naming an earlier, later changed date does not count. Nothing found leaves it empty, never guessed. NSE's `caBroadcastDate` is not
     used (mostly empty, often after the ex-date).
 
 ## Coverage

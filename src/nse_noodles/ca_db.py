@@ -20,10 +20,10 @@ the filings for that window were not pulled:
 - splits, bonuses, rights, bonus instruments, dividends: the first filing whose text names the
   event (`first_notice`), when the market first heard of it;
 - demergers: the first filing whose text says record date, names the demerger, scheme or
-  hive-off, AND writes the record date that held, the feed's, as a date (`record_notice`). That
-  is when a holder could first know the last session to sell before the ex-date (see `exits`).
-  A filing naming another record date (one later changed) or none does not count; nothing found
-  leaves it empty, never guessed.
+  hive-off (NSE's template: "Merger/HiveOff"), AND writes the record date that held, the feed's,
+  as a date (`record_notice`). That is when a holder could first know the last session to sell
+  before the ex-date (see `exits`). A filing naming another record date (one later changed) or
+  none does not count; nothing found leaves it empty, never guessed.
 NSE's `caBroadcastDate` is not used: it is mostly empty and, where set, often later than the
 ex-date.
 
@@ -56,10 +56,11 @@ NOTICE = {
     "splits_bonus": re.compile(r"split|sub-?division|bonus", re.I),
     "rights_issues": re.compile(r"\brights?\b", re.I),
     # a demerger's record-date notice (`record_notice`): "Record date ... pursuant to the Scheme",
-    # "... for the purpose of Merger/HiveOff", "... as the Demerger Record Date"
+    # "... for the purpose of Merger/HiveOff" (NSE's template, at times cut to "Merger/HiveOf"),
+    # "... as the Demerger Record Date"
     "demergers": re.compile(
-        r"record\s+date.*(?:demerg|scheme|arrangement|hive[\s-]*off)"
-        r"|(?:demerg|scheme|arrangement|hive[\s-]*off).*record\s+date",
+        r"record\s+date.*(?:merger|scheme|arrangement|hive[\s-]*of)"
+        r"|(?:merger|scheme|arrangement|hive[\s-]*of).*record\s+date",
         re.I | re.S,
     ),
     "bonus_instruments": re.compile(r"bonus", re.I),
