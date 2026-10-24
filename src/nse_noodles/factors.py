@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal, localcontext
 from fractions import Fraction
 
@@ -21,6 +22,16 @@ GATE_TOL = 0.20
 # close are rare (well under 1% of sessions), so on a date a source names, such a drop is the event.
 DEMERGER_MIN_DROP = Fraction(1, 10)
 SETTLE_SESSIONS = 5  # an uncross-checked gap must still hold at this session's close
+# A demerger's ex-date gap is divided by this index's move over the same night (its open over
+# its previous close), so the market's move that morning is not read as part of the action. NIFTY
+# 500 is the broadest NSE index in the daily archive for the whole index history (from 2012); a
+# sector index would need a point-in-time stock-to-sector map that NSE's free archives do not
+# give. The stock's own beta and sector, and its news that morning, stay in the factor.
+NEUTRAL_INDEX = "NIFTY 500"
+# Two estimates of one demerger's factor (the ex-date gap and the ratio priced at the resulting
+# company's first close) further apart than this, in log terms, are a review case: the later
+# one is recorded as `disputed` and never used.
+DEMERGER_VERSION_TOL = 0.10
 MAX_YIELD = Decimal("0.5")  # cash above half the previous close is a review case, never stored
 BONUS_INSTRUMENT_MIN = Decimal("0.01")  # a bonus debenture worth >= 1% of the price is cash
 JUMP_TOL = 0.25  # an adjusted session move beyond 25% needs a factor (beyond NSE's widest band)
@@ -118,8 +129,8 @@ def agrees(gap: Fraction, check: Fraction) -> bool:
 def market_factor(
     gap: Fraction, checks: dict[str, Fraction], date_confirmed: bool, settled: Fraction | None
 ) -> tuple[Fraction | None, str]:
-    """A demerger's factor is the MARKET gap (NSE's special pre-open discovers the ex price),
-    never a cross-check. Stored when a cross-check (ratio x resulting price, CoA %) agrees;
+    """A demerger's ex-date factor is the MARKET gap (index-neutralised by the caller), never a
+    cross-check. Stored when a cross-check (ratio x resulting price, CoA %) agrees;
     otherwise only when the date is confirmed, the drop is at least DEMERGER_MIN_DROP and the
     close SETTLE_SESSIONS on still agrees with the gap (`settled`), so a pre-open discovery the
     market reverses is not stored. Returns (factor or None, reason)."""
@@ -136,6 +147,28 @@ def market_factor(
     if settled is None or not agrees(settled, gap):
         return None, f"{why}_gap_not_held"
     return gap, f"{why}_material_drop_held"
+
+
+def index_move(
+    levels: dict[date, tuple[float, float]], start: date, end: date, at_open: bool
+) -> Fraction | None:
+    """The index's move from the close of `start` to the open (or close) of `end`, from
+    {day: (open, close)}; None when either day is missing."""
+    a, b = levels.get(start), levels.get(end)
+    if not a or not b or a[1] <= 0 or b[0 if at_open else 1] <= 0:
+        return None
+    return Fraction(str(b[0 if at_open else 1])) / Fraction(str(a[1]))
+
+
+def versions_agree(a: Fraction, b: Fraction, tol: float = DEMERGER_VERSION_TOL) -> bool:
+    return abs(math.log(a / b)) <= math.log1p(tol)
+
+
+def band(estimates: list[Fraction]) -> tuple[Fraction, Fraction]:
+    """A demerger's uncertainty band: the range of the estimates known for it (raw gap,
+    index-neutralised gap, ratio-priced factor). Not a confidence interval: news about the stock
+    itself that morning moves every open-based estimate alike and is not in the band."""
+    return min(estimates), max(estimates)
 
 
 def dividend_factor(amount: Decimal, previous_close: Decimal) -> Decimal | None:

@@ -10,6 +10,20 @@ corporate-action factor checked against the prices before it is used.
 > machine. Those website endpoints are not a documented public API. Respect NSE's terms of use
 > and rate limits: the default pace is one request every 2 seconds, never run two pulls at once,
 > and do not redistribute what you download.
+>
+> **Disclaimer.** The code is provided as is, without warranty of any kind (see `LICENSE`).
+> Nothing here is investment advice. The authors are not responsible for any use or misuse of
+> the code or of data obtained with it, for losses arising from it, or for your compliance with
+> NSE's terms and applicable law.
+
+**Two series, for two jobs.** `out/hindsight_daily.parquet` applies every factor at its latest
+version to all earlier bars, including factors that became known only days or weeks after the
+ex-date: use it for research on what happened, never to make a backtest's decisions.
+`build replay --as-of D` writes `out/replay_daily_asof=D.parquet`, the series as it could have
+been built after day D: bars up to D and only factor versions whose `available_at` is on or
+before D (a version with unknown availability never qualifies). **Backtests compute day D's
+signals from the replay as of D.** Raw prices stay untouched in `bars/` and beside the adjusted
+columns. See [Point in time](#point-in-time).
 
 ## Why
 
@@ -51,11 +65,14 @@ flowchart TD
     LIN --> GATE{Price gate<br/>ex-date open / previous close}
     CADB --> GATE
     R[Research CSVs<br/>sourced, with confidence] --> GATE
-    GATE -->|confirmed| ACT[Accepted factors and cash]
+    GATE -->|confirmed| ACT[Factor versions<br/>value, basis, available_at<br/>append-only ledger]
     GATE -->|not confirmed| REV[Review list]
-    C[Correction list<br/>reviewed fixes] --> ACT
-    ACT --> ADJ[Adjusted series<br/>price basis + total return]
+    IDX -->|demerger gaps| GATE
+    C[Correction list<br/>reviewed fixes] -->|adds versions| ACT
+    ACT -->|latest version| ADJ[Hindsight series<br/>price basis + total return]
+    ACT -->|available by D| PIT[Point-in-time replay<br/>as of D]
     BARS --> ADJ
+    BARS --> PIT
     ADJ --> J[Jump report<br/>unexplained moves above 25%]
     BARS --> COV[Coverage check<br/>sessions vs holidays]
     IDX --> COV
@@ -96,7 +113,8 @@ noodles --data ~/nse-data build bars
 noodles --data ~/nse-data pull indices  --from 2026-10-01 --to 2026-10-23
 noodles --data ~/nse-data pull nse --dataset corporate_actions --from 2026-09-01 --to 2026-10-23
 noodles --data ~/nse-data pull lists
-for s in bars ca-db actions adjusted reports; do noodles --data ~/nse-data build $s; done
+for s in bars ca-db actions hindsight reports; do noodles --data ~/nse-data build $s; done
+noodles --data ~/nse-data build replay --as-of 2026-10-15   # a point-in-time replay
 
 # the full history, everything in order (resumable; rerun after any interruption)
 noodles --data ~/nse-data run --from 2011-06-22
@@ -119,14 +137,16 @@ Under `--data`:
 | Path | What |
 |---|---|
 | `raw/` | Untouched downloads (zips, CSVs, JSON shards) and `not_found.json` (archive 404s) |
+| `ledger/factor_versions.jsonl` | Every factor version ever produced, appended, never rewritten: the only record of `first_observed_at`. Keep it with `raw/`; nothing rebuilds it |
 | `bars/date=YYYY-MM-DD.parquet` | Raw bars: `date, isin, symbol, series, open, high, low, close, prev_close, volume, traded_value` (one row per ISIN; EQ, then BE, BZ, then block windows) |
 | `index/date=YYYY-MM-DD.parquet` | `date, index_name, open, high, low, close` |
-| `out/adjusted_daily.parquet` | Every raw bar plus `chain_isin` (the company's current ISIN), `price_factor`, `div_factor`, `adj_open/high/low/close` (price basis), `adj_volume`, `tr_close` (total return), `ordinary_equity`, `factor_pending` (see [Point in time](#point-in-time)) |
-| `out/adjusted_daily_asof=D.parquet`, `out/instruments_asof=D.parquet` | The same, as it could have been built after the close of D (`build adjusted --as-of D`) |
+| `out/hindsight_daily.parquet` | HINDSIGHT: every raw bar plus `chain_isin` (the company's current ISIN), `price_factor`, `div_factor`, `adj_open/high/low/close` (price basis), `adj_volume`, `tr_close` (total return), `ordinary_equity`, `factor_pending` (see [Point in time](#point-in-time)) |
+| `out/replay_daily_asof=D.parquet`, `out/replay_instruments_asof=D.parquet` | POINT-IN-TIME: the same columns, as they could have been built after day D (`build replay --as-of D`) |
 | `out/instruments.parquet` | Per chain: `isins, symbols, last_symbol, first_day, last_day, ordinary_equity, stopped_trading` |
 | `out/jumps.csv` | Unexplained adjusted moves above 25%: `chain_isin, isin, symbol, previous_day, date, previous_close, adj_open, ratio, security, feed_near, review_near` |
 | `out/review.csv` | Everything waiting for a human: corporate-action rows and ISIN successions, with reason and evidence |
-| `out/adjustment_log.csv` | Every accepted action: `symbol, action_type, factor, cash, method, source, announced_on, notice_url, ex_date, known_on, known_basis, lag_sessions` |
+| `out/adjustment_log.csv` | Every event at its hindsight version: `symbol, action_type, version, factor, cash, basis, method, source, announced_on, notice_url, ex_date, source_published_at, first_observed_at, available_at, available_basis, lag_sessions` |
+| `out/factor_versions.csv` | Every version of every event: `version, status, value, cash, basis, raw_gap, band_low, band_high`, the three timestamps, `available_basis`, `version_id` |
 | `out/coverage.json` | Weekdays by bucket (`holiday, gap, unaccounted, on_listed_holiday, weekend_session`) and `index_missing` |
 | `noodles.duckdb` | All tables below |
 
@@ -140,9 +160,10 @@ Tables in `noodles.duckdb`:
 | `demergers`, `bonus_instruments` | feed columns (ratios and values come from research) |
 | `dividends` | `isin, symbol, ex_date, amount, kinds, status, subjects` (one row per ISIN and ex-date) |
 | `announcements`, `board_meetings` | as NSE gives them (when pulled) |
-| `lineage` | `old_isin, new_isin, effective, status (linked/review), reason, evidence, known_on` |
+| `lineage` | `old_isin, new_isin, effective, status (linked/review), reason, evidence, known_on` (the new ISIN's first day + 10 days: the window the link rules read) |
 | `chain_map` | `isin, chain_isin, depth` |
-| `actions` | Accepted: `chain_isin, isin, symbol, ex_date, action_type, factor, cash, method, source, text, evidence, announced_on, notice_url, known_on, known_basis` |
+| `factor_versions` | Every version: `version_id, chain_isin, isin, symbol, ex_date, action_type, version, status (accepted/disputed), value, cash, basis, raw_gap, band_low, band_high, method, source, text, evidence, announced_on, notice_url, source_published_at, first_observed_at, available_at, available_basis` |
+| `actions` | The hindsight choice: per event, its accepted version of highest precedence (same columns) |
 | `review`, `skipped` | `table, symbol, isin, ex_date, reason, text, hint, evidence` |
 | `corrections_log` | What each correction line did |
 
@@ -152,37 +173,78 @@ on an absolute rupee price (minimum price, tick size).
 
 ### Point in time
 
-`adjusted_daily.parquet` is built with hindsight: every bar before an ex-date is scaled by a
-factor nobody knew until that ex-date, and some factors were knowable only later. Each accepted
-action therefore carries three dates:
+A factor is a set of **versions**, never overwritten. An event (chain, ex-date, type) gets a
+version when a value is first accepted, another when a later observation prices it (a
+demerger's ratio once the resulting company trades), and one per correction line (a deletion is
+a version of value 1). Each version carries three times (India Standard Time):
 
-| Date | Meaning |
+| Time | Meaning |
 |---|---|
-| `announced_on` | The first NSE filing of the symbol (announcement or board-meeting intimation) in the 180 days before the ex-date that names the event; empty when those filings were not pulled |
-| `ex_date` | NSE's ex-date |
-| `known_on` | The last date whose data the factor depends on, so the first date a backtest could have used it; `known_basis` says which fact that was |
+| `source_published_at` | When the source of its terms was published: the research row's `source_date`, the correction's `known_on`, or the first NSE filing found for the event (`announced_on`). Empty = unknown |
+| `first_observed_at` | When this pipeline first produced the version (from the ledger). A history built today is first observed today: a replay is a reconstruction, not a record of what was seen live |
+| `available_at` | The earliest time the value and the rule that accepts it could have been known: the latest of every price and source it reads. **Empty = unknown, and then it never enters a replay.** A date-only source counts from the end of its day; no time is ever moved earlier than its evidence |
 
-| `known_basis` | `known_on` |
+| `available_basis` | `available_at` |
 |---|---|
-| `ex_open` | the ex-date: split, bonus and rights factors confirmed (or TERP-priced) at the ex-date open; dividends |
-| `settled_close` | the close `SETTLE_SESSIONS` (5) sessions from the ex-date: a demerger held at its market gap without a cross-check |
-| `resulting_first_close` | the resulting company's first close: a demerger confirmed by its researched ratio |
-| `research_source_date` | the research row's `source_date`, never before the ex-date: a value only research supplies |
-| `research_undated`, `correction_undated` | unknown (`known_on` empty): such an action is left out of every as-of build |
-| `correction` | the correction line's `known_on` |
+| `ex_open` | the ex-date open, stamped 10:00 (NSE's special pre-open for restructured F&O stocks sets the open by 09:55; other stocks open at 09:15): splits, bonuses and rights confirmed by the gap, TERP, dividends. The feed's terms predate the ex-date (an ex-date exists only once the company has notified its record date), so the open is the binding time |
+| `settled_close` | 16:00 on the session `SETTLE_SESSIONS` (5) from the ex-date: a demerger gap accepted because it held |
+| `resulting_first_close` | 16:00 on the resulting company's first session (not before the research source date): a ratio-priced demerger version, or a gap accepted because the ratio agreed |
+| `research_source_date` | end of the research row's `source_date`, never before the price the decision read |
+| `correction` | end of the correction line's `known_on` |
+| `research_undated`, `correction_undated` | unknown (empty) |
 
-A run of the method on Sep 2026, for example, accepted a demerger at its ex-date opening gap
-(ex-date 7 Sep, previous close 728.25, ex open 260.00, factor 0.3570, no cross-check). The gap
-still held at the fifth session's close, so its log row reads `ex_date 2026-09-07,
-known_on 2026-09-11, known_basis settled_close, lag_sessions 4`. A build `--as-of 2026-09-10`
-leaves that stock unadjusted (the raw 64% gap shows), and `--as-of 2026-09-11` applies 0.3570
-to every earlier bar. In the full build the four bars from 7 to 10 Sep carry
-`factor_pending = true`: the hindsight series shows no gap there that a trader then would have
-seen.
+**Hindsight** (`build hindsight`, `out/hindsight_daily.parquet`) uses each event's accepted
+version of highest precedence (later versions and corrections win), whatever its availability,
+and flags with `factor_pending` the bars from an ex-date until the event's first version was
+available (all of them when none has a known time): there the series shows no gap that a trader
+then would have seen.
 
-For a backtest: compute signals as of each day from the as-of view (or skip names on
-`factor_pending` days), and treat ISIN successions the same way: `lineage.known_on` is the last
-bar of the new ISIN's first ten days, the window the link rules read.
+**Point-in-time replay** (`build replay --as-of D`) uses bars up to D, per event the accepted
+version of highest precedence with `available_at` by the end of D and an ex-date on or before D,
+and only the ISIN links known by D. Adding a version that becomes available after D cannot
+change the replay as of D (`tests/test_point_in_time.py`). For a backtest, compute day D's
+signals from the replay as of D (replay the dates your signals need).
+
+On the Sep-Oct 2026 window, HEG went ex-demerger on 7 Sep (previous close 728.25, ex open
+260.00, raw gap 0.3570; the NIFTY 500 moved −0.03% that night, so the neutralised gap is
+0.3571). With no resulting-company price yet, the gap was accepted because it held five sessions
+later: `available_at 2026-09-11 16:00, available_basis settled_close`. The replay as of 10 Sep
+leaves HEG unadjusted (the raw 64% gap shows); as of 11 Sep it applies 0.3571 to every earlier
+bar. The hindsight series applies it throughout and flags 7-10 Sep `factor_pending`.
+
+ISIN successions follow the same rule: `lineage.known_on` is the new ISIN's first day plus the
+10 days of bars the link rules read, so a build stopped inside that window never dates the link
+earlier.
+
+### Demergers
+
+NSE's feed never gives a demerger's factor. The parent's ex-date open (set in NSE's special
+pre-open for F&O stocks, the regular pre-open otherwise) is the market's price of what is left,
+but the gap ex open / previous close also holds the whole market's move that night. So:
+
+1. **Ex-date version** (`basis index_neutral_gap`): the gap divided by the NIFTY 500's own
+   overnight move (its open over its previous close). NIFTY 500 because it is the broadest NSE
+   index in the daily archive for the whole index history (from 2012); a sector index would need
+   a point-in-time stock-to-sector map that NSE's free archives do not give. Before the index
+   history, or on a missing index day, the version is the raw gap (`basis raw_gap`). The raw gap
+   is always kept (`raw_gap`). The version is accepted when a cross-check agrees (the research
+   ratio priced at the resulting company's first close, or the company's cost-of-acquisition %),
+   or, with none, when the drop is at least 10% and the neutralised close five sessions later
+   still agrees.
+2. **Ratio version** (`basis resulting_ratio`): once every resulting company has traded,
+   1 − Σ rᵢ·Cᵢ / P, with Cᵢ its first close brought back to the ex-date's market level by the
+   index, available from that close. More than 10% (in log terms) from the ex-date version, it is
+   recorded `disputed`, never used, and the event goes to review (`demerger_versions_disagree`).
+3. Each version records a band (`band_low`, `band_high`): the range of the estimates known for it
+   (raw gap, neutralised gap, ratio-priced value).
+
+What this cannot remove: news about the company itself that morning (results, the market's view
+of the new structure, order imbalance in a thin pre-open) moves every open-based estimate alike,
+so it is neither removed nor inside the band. The neutralisation assumes a beta of 1 to the broad
+market and ignores the stock's sector; for an F&O stock the index open (09:15) comes about 40
+minutes before the special pre-open sets the stock's open. The ratio version carries the
+resulting company's own listing pricing. The band is a spread of estimates, not a confidence
+interval.
 
 ## Review lists
 
@@ -194,6 +256,7 @@ bar of the new ISIN's first ten days, the window the link rules read.
 | `unparsed`, `no_issue_price`, `non_simple` | The text cannot be priced (partly paid, warrants, no premium) | Research the letter of offer |
 | `needs_research:*` | A demerger with no ratio/CoA cross-check whose gap alone is not enough | Research the scheme: ratio, resulting company, CoA |
 | `gap_disagrees_*`, `no_cross_check_*` | A demerger gap not accepted: date unconfirmed, drop under 10%, or not held five sessions on | Research; correct by hand if confirmed |
+| `demerger_versions_disagree` | The ratio-priced factor is more than 10% from the ex-date gap; the gap version stays, the ratio version is `disputed` | Check the ratio, the resulting company and its first session |
 | `low_confidence`, `date_disputed` | Research is weak or names another date | More sources |
 | `research_says_row_wrong` | A research row marks NSE's row itself wrong (`our_data_wrong = yes`); its terms are not used | A correction line (`delete`, `move` or `add`) |
 | `needs_value` | A bonus of debentures/preference shares without a researched value | Research the value per share |
@@ -217,12 +280,15 @@ add. It is input, never output, and is re-applied on every rebuild.
   demerger,PARENT,INE000X01011,2025-01-06,demerger,Child Ltd,CHILD,INE000Y01019,1,10,,,,,,,,2025-01-06,no,high,https://example.com/filing.pdf,2024-11-20,"1 equity share of Child for every 10 shares of Parent",
   ```
   `source_date` is when the source was published. A value taken from an undated row has no
-  `known_on` and stays out of as-of builds.
+  `available_at` and never enters a replay; never write a date earlier than the source shows.
+  Change research by adding rows: an edited or removed row withdraws its versions from the build
+  (the ledger keeps them; the build counts them as `withdrawn_from_ledger`).
 - `corrections.tsv`: reviewed fixes, `op isin ex_date type value new_ex_date note [known_on]`
   (tab-separated; `op` is add / replace / delete / move; `value` is the factor, or rupees per
   share for `dividend`; a `split` factor is new face value / old, so a consolidation is above
-  1; `known_on` is when the corrected value was public). Every line needs a
-  note with its evidence:
+  1; `known_on` is when the corrected value was public). Each line adds a version and never
+  edits one, so a replay before `known_on` keeps what was believed then; a line without
+  `known_on` reaches the hindsight series only. Every line needs a note with its evidence:
   ```tsv
   add	INE000X01011	2019-12-19	split	0.1		NSE circular: unit face value 10 -> 1; gap 0.1003	2019-12-10
   ```
@@ -255,13 +321,16 @@ add. It is input, never output, and is re-applied on every rebuild.
   pipeline only verifies and stores what research finds.
 - **ETF unit splits** are not in the corporate-action feed; they show up as jumps and are fixed
   from NSE circulars through the correction list.
-- **Market-gap demerger factors** carry about a day of noise: the special pre-open price is
-  the market's estimate, not an accounting value.
-- **The default series uses hindsight.** Use the as-of build or `factor_pending` for anything
-  point in time (see [Point in time](#point-in-time)). `known_on` covers what the factor's own
-  confirmation reads; whether the event would have been known at all before its ex-date
-  (`announced_on`) is only as good as the announcements pulled, and research or corrections
-  without a source date are left out of as-of builds rather than dated by guess.
+- **Demerger factors are market estimates.** The index-neutralised gap removes the market's
+  move that night, not the stock's own news; see [Demergers](#demergers).
+- **Hindsight is the default output.** Use the replay for anything point in time. Feed rows
+  carry no publication time of their own (NSE's broadcast date is mostly empty), so their
+  versions' `available_at` rests on the ex-date open; `announced_on` is only as good as the
+  announcements pulled; research and corrections without a source date never enter a replay
+  rather than being dated by guess. A replay of a history built today is a reconstruction
+  (`first_observed_at` says when the pipeline first saw each version). A link can become a
+  review case when a competing successor appears up to 30 sessions later; a replay of the full
+  build then lacks a link that a build stopped earlier had.
 - **No pay dates.** Dividend cash is credited on the ex-date.
 - The website JSON endpoints can change or block automated access at any time.
 
@@ -270,7 +339,7 @@ add. It is input, never output, and is re-applied on every rebuild.
 ```bash
 uv pip install -e ".[dev]"
 ruff check . && ruff format --check .
-pytest -q                     # pure-function tests only: factor maths, TERP, parsers
+pytest -q                     # pure functions only: factor maths, TERP, parsers, version selection
 ```
 
 The rules are in [docs/method.md](docs/method.md). Code is MIT-licensed (see `LICENSE`); the

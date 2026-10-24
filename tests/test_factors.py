@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 from fractions import Fraction
 
@@ -67,3 +68,24 @@ def test_dividend_factor_and_cash_rules():
     assert factors.over_yield(Decimal(60), Decimal(100))
     assert factors.bonus_instrument_counts(Decimal("12.50"), Decimal("154.75"))
     assert not factors.bonus_instrument_counts(Decimal("0.85"), Decimal(100))
+
+
+def test_demerger_gap_is_neutralised_by_the_index_move_that_night():
+    levels = {date(2026, 9, 4): (100.0, 100.0), date(2026, 9, 7): (102.0, 101.0)}
+    night = factors.index_move(levels, date(2026, 9, 4), date(2026, 9, 7), at_open=True)
+    assert night == Fraction(102, 100)
+    raw = Fraction(260) / Fraction("728.25")
+    assert raw / night < raw  # a market up 2% that morning hid part of the drop
+    assert factors.index_move(levels, date(2026, 9, 3), date(2026, 9, 7), at_open=True) is None
+    assert factors.index_move(
+        levels, date(2026, 9, 4), date(2026, 9, 7), at_open=False
+    ) == Fraction(101, 100)
+
+
+def test_demerger_versions_agree_within_tolerance_and_band():
+    assert factors.versions_agree(Fraction(36, 100), Fraction(38, 100))
+    assert not factors.versions_agree(Fraction(36, 100), Fraction(42, 100))
+    assert factors.band([Fraction(3, 10), Fraction(36, 100), Fraction(33, 100)]) == (
+        Fraction(3, 10),
+        Fraction(36, 100),
+    )

@@ -127,3 +127,11 @@ def build(layout: Layout, names: tuple[str, ...] | None = DEFAULT_NAMES) -> int:
         atomic_write(target, lambda tmp, f=frame: f.write_parquet(tmp))
         written += 1
     return written
+
+
+def levels(layout: Layout, name: str) -> dict[date, tuple[float, float]]:
+    """{day: (open, close)} of one index from the parsed files; empty when none were built."""
+    if not any(layout.index.glob("date=*.parquet")):
+        return {}
+    frame = pl.read_parquet(layout.index_glob()).filter(pl.col("index_name") == name)
+    return {d: (o, c) for d, o, c in frame.select("date", "open", "close").iter_rows()}

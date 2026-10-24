@@ -9,23 +9,29 @@ Order of work:
    factor is TERP / cum price with the cum price the previous close. A rights gap that is merely
    `ambiguous` (small factors drown in a session's move) is accepted, tagged
    `price_unconfirmed`; anything `off_factor` goes to review.
-3. Demergers, at the MARKET gap (`factors.market_factor`) divided by any factor accepted on the
-   same day, with the research ratio priced at the resulting company's first close and the
-   company's cost-of-acquisition % as cross-checks only.
+3. Demergers. The ex-date version is the MARKET gap (ex open / previous close, divided by any
+   factor accepted on the same day) divided by the NIFTY 500's move over the same night
+   (`factors.NEUTRAL_INDEX`), accepted by `factors.market_factor`; the raw gap is kept beside
+   it. Once every resulting company has a first close, the research ratio priced there
+   (`factors.ratio_factor`, the child's close brought back to the ex-date by the index) is a
+   second version, `disputed` and a review case when it is more than DEMERGER_VERSION_TOL from
+   the first. Each demerger version records its band (`factors.band`).
 4. Cash: dividends (total-return factor 1 - D / previous raw close; P&L gets raw prices plus
    cash) and bonuses of debentures / preference shares worth >= 1% of the price.
-5. The reviewed correction list, last.
+5. The reviewed correction list, last: each line ADDS a version (a deletion is a version of
+   value 1), so what was believed before the correction stays replayable.
 
 Nothing is guessed: a row that does not parse, has no bars, or is not confirmed by the bars is a
 review row with a reason.
 
-Every accepted action carries `known_on`: the last date whose data the factor depends on, so the
-first date a backtest could have used it (`known_basis` says which fact that was): the ex-date
-open for a gate-confirmed or TERP factor and for a dividend, the close SETTLE_SESSIONS on for a
-demerger held at its market gap, the resulting company's first close for a demerger confirmed by
-its ratio, and the research `source_date` for a value only research supplies (empty when the
-research row has none: such an action is left out of as-of builds). `announced_on` (from
-`ca_db`) is when the market first heard of the event.
+Every version carries `available_at` (see `versions`): the latest of the prices and sources the
+value and its acceptance read, so the earliest time a backtest could have used it
+(`available_basis` says which fact that was): the ex-date open for a gate-confirmed or TERP
+factor and for a dividend; the close SETTLE_SESSIONS on for a demerger gap accepted because it
+held; the resulting company's first close for a ratio-priced demerger; the research
+`source_date` (end of that day) for a value only research supplies; a correction's `known_on`.
+Null when a source it needs is undated: such a version never enters a replay. `announced_on`
+(from `ca_db`) is the first NSE filing found for the event.
 """
 
 from __future__ import annotations
@@ -35,7 +41,7 @@ import math
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
@@ -44,11 +50,14 @@ from typing import Any
 import duckdb
 import polars as pl
 
-from . import factors, lineage, parse
-from .bars import Bar, Span, spans, symbol_runs, window
+from . import factors, indices, lineage, parse, versions
+from .bars import EDGE_DAYS, Bar, Span, spans, symbol_runs, window
 from .bars import sessions as bar_sessions
 from .curation import Correction, ResearchRow, read_corrections, read_research
 from .layout import Layout
+from .versions import ACCEPTED, DISPUTED, at_close, at_open, end_of, latest
+
+Known = tuple[datetime | None, str]  # (available_at, available_basis)
 
 BAR_DAYS = 14  # the previous session and the ex session must fall this close to the ex-date
 WINDOW_DAYS = 25  # calendar days of bars read each side of an ex-date
@@ -313,23 +322,37 @@ def _accept(
     factor: Fraction | None,
     method: str,
     evidence: dict,
-    known: tuple[date | None, str],
+    known: Known,
     cash: Decimal | None = None,
+    *,
+    basis: str,
+    terms: Sequence[ResearchRow] = (),
+    status: str = ACCEPTED,
+    raw_gap: Fraction | None = None,
+    band: tuple[Fraction, Fraction] | None = None,
 ) -> dict:
+    """One version of an event. `terms`: the research rows its value reads (their latest
+    `source_date` is its `source_published_at`); without them, the first NSE filing found."""
     sources = [
         {"file": r.file, "line": r.line, "url": r.source_url, "confidence": r.confidence}
         for r in p.research
     ]
     if sources:
         evidence = {**evidence, "research": sources}
+    published = latest(*(end_of(r.source_date) for r in terms)) if terms else end_of(p.announced_on)
     return {
         "chain_isin": chain,
         "isin": before.isin,
         "symbol": before.symbol,
         "ex_date": p.ex_date,
         "action_type": kind,
-        "factor": float(factor) if factor is not None else 1.0,
+        "status": status,
+        "value": float(factor) if factor is not None else 1.0,
         "cash": float(cash) if cash is not None else None,
+        "basis": basis,
+        "raw_gap": float(raw_gap) if raw_gap is not None else None,
+        "band_low": float(band[0]) if band else None,
+        "band_high": float(band[1]) if band else None,
         "method": method,
         "source": "research"
         if (p.research and kind in ("rights", "demerger")) or p.source == "research"
@@ -338,19 +361,20 @@ def _accept(
         "evidence": json.dumps(evidence, default=str, sort_keys=True),
         "announced_on": p.announced_on,
         "notice_url": p.notice_url,
-        "known_on": known[0],
-        "known_basis": known[1],
+        "source_published_at": published,
+        "available_at": known[0],
+        "available_basis": known[1],
     }
 
 
-def research_known(rows: Sequence[ResearchRow], floor: date) -> tuple[date | None, str]:
-    """When a value taken from research was public: the latest `source_date` of the rows used,
-    never before `floor` (the session the rest of the decision read). (None, ...) when a row
-    has no source date: the action is then left out of point-in-time builds."""
+def research_known(rows: Sequence[ResearchRow], floor: datetime) -> Known:
+    """When a value taken from research could be used: the end of the latest `source_date` of
+    the rows, never before `floor` (the price the rest of the decision read). (None, ...) when a
+    row has no source date: the version then never enters a point-in-time replay."""
     days = [r.source_date for r in rows]
     if not days or any(d is None for d in days):
         return None, "research_undated"
-    return max(floor, *days), "research_source_date"  # type: ignore[type-var]
+    return latest(floor, *(end_of(d) for d in days)), "research_source_date"
 
 
 def _bar_evidence(before: Bar, on: Bar) -> dict[str, Any]:
@@ -422,7 +446,11 @@ def decide_price_group(
         for r in p.research
         if r.confidence >= 1 and r.ratio and r.issue_price
     ]
-    known = research_known(research_terms, on.day) if research_terms else (on.day, "ex_open")
+    known: Known = (
+        research_known(research_terms, at_open(on.day))
+        if research_terms
+        else (at_open(on.day), "ex_open")
+    )
     if not verdict.confirmed and not (rights_only and verdict.reason == "ambiguous"):
         for p in {id(p): p for p, _, _ in legs}.values():
             out.review.append(_row(p, verdict.reason, evidence))
@@ -432,8 +460,20 @@ def decide_price_group(
         method = "gate_confirmed" if verdict.confirmed else "terp_price_unconfirmed"
         if kind == "rights":
             method = ("terp; " + method) if verdict.confirmed else method
+        terms = [r for r in research_terms if r in p.research] if kind == "rights" else []
         accepted.append(
-            _accept(chain, before, p, kind, f, method, {**evidence, "hint": p.hint}, known)
+            _accept(
+                chain,
+                before,
+                p,
+                kind,
+                f,
+                method,
+                {**evidence, "hint": p.hint},
+                known,
+                basis="terp" if kind == "rights" else "stated_ratio",
+                terms=terms,
+            )
         )
     return accepted
 
@@ -456,40 +496,51 @@ def decide_demerger(
     same_day: Fraction,
     resulting: dict[str, list[Bar]],
     children: dict[tuple[str, int], str],
+    index: dict[date, tuple[float, float]],
     out: Outcome,
-) -> dict | None:
+) -> list[dict]:
+    """The demerger's versions: the index-neutralised ex-date gap, then (when every resulting
+    company has a first close) the ratio-priced factor. Empty when the gap is not accepted."""
     pair = around(series, p.ex_date)
     if isinstance(pair, str):
         out.review.append(_row(p, pair))
-        return None
+        return []
     before, on = pair
     legs = [r for r in p.research if r.leg_type in ("demerger", "")]
     if p.research and not legs:
         out.skipped.append(_row(p, "amalgamation_only"))
-        return None
+        return []
     if legs and min(r.confidence for r in legs) < 1:
         out.review.append(_row(p, "low_confidence"))
-        return None
+        return []
     if _dates_disputed(p):
         out.review.append(_row(p, "date_disputed"))
-        return None
+        return []
     prev = fr(before.close)
-    gap = fr(on.open) / prev / same_day
+    raw = fr(on.open) / prev / same_day
+    overnight = factors.index_move(index, before.day, on.day, at_open=True)
+    gap = raw / overnight if overnight else raw
+
+    def neutral(price: Fraction, day: date) -> Fraction:
+        """A close of `day` brought back to the previous close's market level."""
+        drift = factors.index_move(index, before.day, day, at_open=False)
+        return price / drift if drift else price
+
     checks: dict[str, Fraction] = {}
-    check_known: dict[str, tuple[date | None, str]] = {}
+    check_known: dict[str, Known] = {}
     priced = []
     first_closes = []
     for r in legs:
         child = resulting.get(children.get((r.file, r.line), ""), [])
         first = next((b for b in child if b.day >= p.ex_date), None)
         if r.ratio and first is not None and first.close > 0:
-            priced.append((r.ratio[0], r.ratio[1], fr(first.close)))
+            priced.append((r.ratio[0], r.ratio[1], neutral(fr(first.close), first.day)))
             first_closes.append(first.day)
     if legs and len(priced) == len(legs) and same_day == 1:
         rf = factors.ratio_factor(priced, prev)
         if rf is not None:
             checks["ratio"] = rf
-            ratio_known, why = research_known(legs, max(first_closes))
+            ratio_known, why = research_known(legs, at_close(max(first_closes)))
             check_known["ratio"] = (ratio_known, "resulting_first_close" if ratio_known else why)
     coa = factors.coa_factor(
         next((r.coa_parent for r in legs if r.coa_parent is not None), None),
@@ -498,14 +549,18 @@ def decide_demerger(
     note = coa if isinstance(coa, str) else ""
     if isinstance(coa, Fraction):
         checks["coa"] = coa
-        check_known["coa"] = research_known(legs, on.day)
+        check_known["coa"] = research_known(legs, at_open(on.day))
     later = [b for b in series if b.day >= on.day]
     settled = None
     if len(later) >= factors.SETTLE_SESSIONS:
-        settled = fr(later[factors.SETTLE_SESSIONS - 1].close) / prev / same_day
+        last = later[factors.SETTLE_SESSIONS - 1]
+        settled = neutral(fr(last.close), last.day) / prev / same_day
     factor, why = factors.market_factor(gap, checks, True, settled)
     evidence = {
         **_bar_evidence(before, on),
+        "raw_gap": f4(raw),
+        "index": factors.NEUTRAL_INDEX if overnight else "missing",
+        "index_overnight": f4(overnight) if overnight else None,
         "market_gap": f4(gap),
         "same_day_factor": f4(same_day),
         "settled": f4(settled) if settled is not None else None,
@@ -514,18 +569,57 @@ def decide_demerger(
     }
     if factor is None:
         out.review.append(_row(p, why if p.research else f"needs_research:{why}", evidence))
-        return None
+        return []
     method = "market_gap; " + "; ".join(
         f"{k} {f4(v)}" + ("" if factors.agrees(gap, v) else " disagrees") for k, v in checks.items()
     )
-    # known as soon as the first route that accepts it was knowable: an agreeing check, or the
+    # usable as soon as the first route that accepts it was knowable: an agreeing check, or the
     # gap holding SETTLE_SESSIONS on
     routes = [check_known[k] for k, v in checks.items() if factors.agrees(gap, v)]
     if factors.market_factor(gap, {}, True, settled)[0] is not None:
-        routes.append((later[factors.SETTLE_SESSIONS - 1].day, "settled_close"))
+        routes.append((at_close(later[factors.SETTLE_SESSIONS - 1].day), "settled_close"))
     dated = [r for r in routes if r[0] is not None]
-    known = min(dated) if dated else routes[0]
-    return _accept(chain, before, p, "demerger", factor, method.rstrip("; "), evidence, known)
+    known = min(dated) if dated else routes[0]  # type: ignore[type-var]
+    found = [
+        _accept(
+            chain,
+            before,
+            p,
+            "demerger",
+            factor,
+            method.rstrip("; "),
+            evidence,
+            known,
+            basis="index_neutral_gap" if overnight else "raw_gap",
+            terms=legs if known[1] in ("research_source_date", "resulting_first_close") else (),
+            raw_gap=raw,
+            band=factors.band([raw, gap]),
+        )
+    ]
+    ratio = checks.get("ratio")
+    if ratio is not None:
+        agree = factors.versions_agree(gap, ratio)
+        found.append(
+            _accept(
+                chain,
+                before,
+                p,
+                "demerger",
+                ratio,
+                f"resulting_ratio; ex-date version {f4(gap)}"
+                + ("" if agree else " disagrees: review"),
+                evidence,
+                check_known["ratio"],
+                basis="resulting_ratio",
+                terms=legs,
+                status=ACCEPTED if agree else DISPUTED,
+                raw_gap=raw,
+                band=factors.band([raw, gap, ratio]),
+            )
+        )
+        if not agree:
+            out.review.append(_row(p, "demerger_versions_disagree", evidence))
+    return found
 
 
 def decide_cash(chain: str, p: Proposal, series: list[Bar], out: Outcome) -> dict | None:
@@ -538,7 +632,9 @@ def decide_cash(chain: str, p: Proposal, series: list[Bar], out: Outcome) -> dic
     p_close = Decimal(str(prev.close))
     cash = p.cash
     method = "dividend"
-    known: tuple[date | None, str] = (p.ex_date, "ex_open")
+    basis = "feed_amount"
+    terms: list[ResearchRow] = []
+    known: Known = (at_open(p.ex_date), "ex_open")
     if p.table == "bonus_instruments":
         rows = [r for r in p.research if r.value_per_share]
         if not rows:
@@ -558,8 +654,8 @@ def decide_cash(chain: str, p: Proposal, series: list[Bar], out: Outcome) -> dic
         if not factors.bonus_instrument_counts(cash, p_close):
             out.skipped.append(_row(p, "below_one_percent"))
             return None
-        method = "bonus_instrument_as_cash"
-        known = research_known([r], p.ex_date)
+        method, basis, terms = "bonus_instrument_as_cash", "research_value", [r]
+        known = research_known([r], at_open(p.ex_date))
     assert cash is not None
     if factors.over_yield(cash, p_close):
         out.review.append(
@@ -573,71 +669,101 @@ def decide_cash(chain: str, p: Proposal, series: list[Bar], out: Outcome) -> dic
         "tr_factor": str(f),
         "kinds": p.hint,
     }
-    return _accept(chain, prev, p, "dividend", None, method, evidence, known, cash)
+    return _accept(
+        chain, prev, p, "dividend", None, method, evidence, known, cash, basis=basis, terms=terms
+    )
 
 
 def apply_corrections(
-    accepted: list[dict],
+    found: list[dict],
     corrections: Sequence[Correction],
     chains: Chains,
     spans_by: dict[str, Span],
 ) -> list[dict]:
-    """The reviewed list, last: add a missing leg, replace a factor, delete or move an action.
-    Keys are (chain, ex-date, type), so a line may name any ISIN of the chain."""
+    """The reviewed list, last. Each line ADDS versions, never edits one: `add` a missing event,
+    `replace` a value, `delete` (a version of value 1, cash 0), `move` (a deletion at the old
+    ex-date and a version at the new one). Keys are (chain, ex-date, type), so a line may name
+    any ISIN of the chain. A correction's version is available from its `known_on` (end of that
+    day); without one it never enters a replay."""
     log = []
-    index = {(a["chain_isin"], a["ex_date"], a["action_type"]): a for a in accepted}
+    live: dict[tuple, dict | None] = {}  # the event's current version; None once deleted
+    for v in found:
+        if v["status"] == ACCEPTED:
+            live[(v["chain_isin"], v["ex_date"], v["action_type"])] = v
+
+    def version(
+        c: Correction, held: dict, ex: date, value: float, how: str, basis: str, when: Known
+    ) -> dict:
+        dividend = held["action_type"] == "dividend"
+        v = {
+            **held,
+            "ex_date": ex,
+            "status": ACCEPTED,
+            "value": 1.0 if dividend else value,
+            "cash": value if dividend else None,
+            "basis": basis,
+            "raw_gap": None,
+            "band_low": None,
+            "band_high": None,
+            "method": how,
+            "source": "correction",
+            "text": c.note[:500],
+            "evidence": json.dumps({"line": c.line, "note": c.note}),
+            "source_published_at": end_of(c.known_on),
+            "available_at": when[0],
+            "available_basis": when[1],
+        }
+        found.append(v)
+        return v
+
     for c in corrections:
         chain = chains.head.get(c.isin, c.isin)
         key = (chain, c.ex_date, c.action_type)
-        held = index.get(key)
+        held = live.get(key)
         status = "applied"
-        value = float(c.value) if c.value is not None else None
+        value = float(c.value) if c.value is not None else 1.0
+        when: Known = (end_of(c.known_on), "correction" if c.known_on else "correction_undated")
         if c.op == "add":
             if held is not None:
                 status = "exists_use_replace"
             else:
-                index[key] = {
+                base = {
                     "chain_isin": chain,
                     "isin": c.isin,
                     "symbol": spans_by[c.isin].last_symbol if c.isin in spans_by else "",
-                    "ex_date": c.ex_date,
                     "action_type": c.action_type,
-                    "factor": 1.0 if c.action_type == "dividend" else value,
-                    "cash": value if c.action_type == "dividend" else None,
-                    "method": "correction",
-                    "source": "correction",
-                    "text": c.note[:500],
-                    "evidence": json.dumps({"line": c.line, "note": c.note}),
                     "announced_on": None,
                     "notice_url": "",
-                    "known_on": c.known_on,
-                    "known_basis": "correction" if c.known_on else "correction_undated",
                 }
+                live[key] = version(c, base, c.ex_date, value, "correction", "correction", when)
         elif held is None:
             status = "not_found"
         elif c.op == "delete":
-            del index[key]
+            version(c, held, c.ex_date, 0.0 if c.action_type == "dividend" else 1.0,
+                    "correction: deleted", "correction_delete", when)  # fmt: skip
+            live[key] = None
         elif c.op == "replace":
-            held.update(
-                {
-                    "factor": 1.0 if c.action_type == "dividend" else value,
-                    "method": f"correction (was {held['factor']})",
-                    "source": "correction",
-                    "known_on": c.known_on,
-                    "known_basis": "correction" if c.known_on else "correction_undated",
-                }
+            was = held["cash"] if c.action_type == "dividend" else held["value"]
+            live[key] = version(
+                c, held, c.ex_date, value, f"correction (was {was})", "correction", when
             )
-            if c.action_type == "dividend":
-                held["cash"] = value
-        elif c.op == "move" and (chain, c.new_ex_date, c.action_type) in index:
+        elif c.op == "move" and live.get((chain, c.new_ex_date, c.action_type)) is not None:
             status = "destination_exists"  # never overwrite: replace or delete that one first
         elif c.op == "move":
-            del index[key]
-            held["ex_date"] = c.new_ex_date
-            held["method"] = f"correction (moved from {c.ex_date})"
-            if held["known_on"] is not None and c.new_ex_date > held["known_on"]:
-                held["known_on"] = c.new_ex_date
-            index[(chain, c.new_ex_date, c.action_type)] = held
+            kept = held["cash"] if c.action_type == "dividend" else held["value"]
+            version(c, held, c.ex_date, 0.0 if c.action_type == "dividend" else 1.0,
+                    f"correction: moved to {c.new_ex_date}", "correction_delete", when)  # fmt: skip
+            moved = (latest(held["available_at"], when[0]), when[1])
+            live[key] = None
+            live[(chain, c.new_ex_date, c.action_type)] = version(
+                c,
+                held,
+                c.new_ex_date,  # type: ignore[arg-type]
+                kept,
+                f"correction (moved from {c.ex_date})",
+                "correction_move",
+                moved,
+            )
         log.append(
             {
                 "line": c.line,
@@ -649,7 +775,6 @@ def apply_corrections(
                 "note": c.note[:300],
             }
         )
-    accepted[:] = list(index.values())
     return log
 
 
@@ -687,23 +812,6 @@ def _write(
     con.unregister("frame")
 
 
-ACTION_SCHEMA = {
-    "chain_isin": pl.Utf8,
-    "isin": pl.Utf8,
-    "symbol": pl.Utf8,
-    "ex_date": pl.Date,
-    "action_type": pl.Utf8,
-    "factor": pl.Float64,
-    "cash": pl.Float64,
-    "method": pl.Utf8,
-    "source": pl.Utf8,
-    "text": pl.Utf8,
-    "evidence": pl.Utf8,
-    "announced_on": pl.Date,
-    "notice_url": pl.Utf8,
-    "known_on": pl.Date,
-    "known_basis": pl.Utf8,
-}
 REVIEW_SCHEMA = {
     "table": pl.Utf8,
     "symbol": pl.Utf8,
@@ -725,8 +833,9 @@ LINEAGE_SCHEMA = {
 }
 
 
-def build(layout: Layout, curation: Path) -> dict[str, Any]:
+def build(layout: Layout, curation: Path, now: datetime | None = None) -> dict[str, Any]:
     all_spans = spans(layout)
+    index = indices.levels(layout, factors.NEUTRAL_INDEX)
     sessions = bar_sessions(layout)
     runs = symbol_runs(layout)
     research = read_research(curation / "research")
@@ -764,10 +873,10 @@ def build(layout: Layout, curation: Path) -> dict[str, Any]:
                     "status": d.status,
                     "reason": d.reason,
                     "evidence": lineage.evidence_json(d),
-                    # the link reads the new ISIN's first EDGE_DAYS of bars
-                    "known_on": chains.spans[d.new_isin].head[-1].day
-                    if d.new_isin in chains.spans
-                    else None,
+                    # the link reads the new ISIN's bars up to EDGE_DAYS after its first day:
+                    # known once that whole window has passed, whatever bars the data holds
+                    # yet (a build stopped inside the window must not date the link earlier)
+                    "known_on": d.effective + timedelta(days=EDGE_DAYS),
                 }
                 for d in decisions
             ],
@@ -863,11 +972,9 @@ def build(layout: Layout, curation: Path) -> dict[str, Any]:
                         ),
                         start=Fraction(1),
                     )
-                got = decide_demerger(
-                    chain, p, series[chain], same_day, bars_by_isin, children, out
+                out.accepted += decide_demerger(
+                    chain, p, series[chain], same_day, bars_by_isin, children, index, out
                 )
-                if got:
-                    out.accepted.append(got)
             else:
                 got = decide_cash(chain, p, series[chain], out)
                 if got:
@@ -877,16 +984,29 @@ def build(layout: Layout, curation: Path) -> dict[str, Any]:
                     else:  # a dividend and a bonus distribution on one day: one cash row
                         held["cash"] += got["cash"]
                         held["method"] += "+" + got["method"]
+                        held["basis"] += "+" + got["basis"]
+                        held["source_published_at"] = latest(
+                            held["source_published_at"], got["source_published_at"]
+                        )
+                        if held["available_at"] is None or got["available_at"] is None:
+                            held["available_at"] = None
+                            held["available_basis"] = "research_undated"
+                        elif got["available_at"] > held["available_at"]:
+                            held["available_at"] = got["available_at"]
+                            held["available_basis"] = got["available_basis"]
         out.accepted += list(cash.values())
 
-        # 5. corrections
+        # 5. corrections, then every version numbered, stamped and written
         log = apply_corrections(out.accepted, corrections, chains, chains.spans)
-        _write(
-            con,
-            "actions",
-            sorted(out.accepted, key=lambda a: (a["chain_isin"], a["ex_date"], a["action_type"])),
-            ACTION_SCHEMA,
+        found, withdrawn = versions.Ledger(layout.ledger).stamp(
+            versions.number(out.accepted), now or versions.now_ist()
         )
+        table = versions.frame(found).sort(*versions.EVENT, "version")
+        hindsight = versions.select(table, None)
+        for name, frame in (("factor_versions", table), ("actions", hindsight)):
+            con.register("frame", frame)
+            con.execute(f'CREATE OR REPLACE TABLE "{name}" AS SELECT * FROM frame')
+            con.unregister("frame")
         _write(con, "review", out.review, REVIEW_SCHEMA)
         _write(con, "skipped", out.skipped, REVIEW_SCHEMA)
         _write(
@@ -912,7 +1032,11 @@ def build(layout: Layout, curation: Path) -> dict[str, Any]:
 
     return {
         "lineage": count([{"k": f"{d.status}:{d.reason}"} for d in decisions], "k"),
-        "accepted": count(out.accepted, "action_type"),
+        "events": count(hindsight.to_dicts(), "action_type"),
+        "versions": count(found, "available_basis"),
+        "disputed": sum(v["status"] == DISPUTED for v in found),
+        "available_at_unknown": sum(v["available_at"] is None for v in found),
+        "withdrawn_from_ledger": withdrawn,
         "review": count(out.review, "reason"),
         "skipped": count(out.skipped, "reason"),
         "corrections": count(log, "status"),

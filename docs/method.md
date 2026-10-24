@@ -11,7 +11,9 @@ disagree, one of them is wrong.
    Research may read company filings, BSE/NSE filings and reputable news, always quoted.
 2. The data belongs to NSE. Nothing pulled is committed or redistributed. Pace requests (one
    every 2 s by default), one pull at a time, and follow NSE's terms.
-3. Raw downloads are kept untouched and never rewritten. Everything else is rebuilt from them.
+3. Raw downloads are kept untouched and never rewritten. Everything else is rebuilt from them,
+   except the append-only factor ledger (rule 32), which records when each version was first
+   observed.
 
 ## Identity and survivorship
 
@@ -49,13 +51,21 @@ disagree, one of them is wrong.
 15. Rights M:N at issue price S (face value + premium), cum price P = previous close:
     TERP / P = (N·P + M·S) / ((N+M)·P). Neutral when S ≥ P. A partly-paid issue uses the full
     issue price. Warrants, convertibles or debentures alongside: review.
-16. Demerger: the factor is the MARKET gap, ex-date open / previous close (NSE runs a special
-    pre-open that discovers it), divided by any other factor on the same day. Two cross-checks
-    are written beside it and never used as the factor: the ratio priced at the resulting
-    company's first close, 1 − Σ(rᵢ·Cᵢ)/P, and the cost-of-acquisition % (a book-value tax
-    allocation, which can differ a lot from the market). The gap is accepted when a cross-check
-    agrees with it; with none agreeing or none available, only when the ex-date is confirmed, the
-    drop is at least 10% and the close five sessions later still agrees with it.
+16. Demerger: NSE gives no factor; the market prices it. The EX-DATE VERSION is the gap ex-date
+    open / previous close (NSE sets the open in a special pre-open for F&O stocks, the regular
+    pre-open otherwise), divided by any other factor on the same day and by the NIFTY 500's move
+    over the same night (its open / previous close), so the market's move is not read as the
+    action; the raw gap is kept beside it, and without index data the raw gap is the version.
+    Cross-checks: the research ratio priced at the resulting companies' first closes,
+    1 − Σ(rᵢ·Cᵢ)/P with each Cᵢ brought back to the ex-date's market level by the index, and the
+    cost-of-acquisition % (a book-value tax allocation, which can differ a lot from the market).
+    The gap is accepted when a cross-check agrees with it; with none agreeing or none available,
+    only when the ex-date is confirmed, the drop is at least 10% and the neutralised close five
+    sessions later still agrees with it. Once every resulting company has traded, the
+    ratio-priced value is a second version, available from that first close; more than 10% (log)
+    from the ex-date version it is `disputed`, never used, and the event goes to review. Every
+    demerger version records its band: the range of the estimates known for it. The stock's own
+    news that morning is in every open-based estimate and cannot be removed.
 17. A bonus of debentures or preference shares issues no equity: never a price factor. When its
     value is at least 1% of the previous close it is a cash distribution of that value (as a
     dividend); below 1% it is treated as neutral.
@@ -98,29 +108,39 @@ disagree, one of them is wrong.
     are used; low confidence goes to review. A research row overrides NSE's terms only when
     confident; a date it disputes sends the event to review.
 30. Wrong or missing factors are fixed by a reviewed correction list (add, replace, delete,
-    move), each line with its evidence; it is applied last and re-applied on every rebuild.
+    move), each line with its evidence; it is applied last and re-applied on every rebuild. Each
+    line adds a version (a deletion is a version of value 1); none edits one.
 31. The jump report (adjusted session moves beyond 25%) is the final check: after review, each
     jump is either a fixed factor or an explained genuine move.
 
 ## Point in time
 
-32. Every accepted action records when its factor became knowable (`known_on`): the last date
-    whose data the decision reads. Gate-confirmed and TERP factors and dividends: the ex-date
-    (the ex open). A demerger held at its market gap: the close of the settle session. A
-    demerger confirmed by its ratio: the resulting company's first close. A value only research
-    or a correction supplies: its stated source date, never before the ex-date.
-33. An action whose `known_on` is unknown is never dated by guess: it is left out of every as-of
-    build and flags every bar from its ex-date as `factor_pending`.
-34. The as-of build for day D uses only bars up to D, factors with `known_on` <= D and ISIN links
-    whose `known_on` (the last bar of the window the link rules read) is <= D. The default build
-    is the hindsight view, and flags the bars between an ex-date and its `known_on`.
-35. `announced_on` is the first NSE filing naming the event within 180 days before the ex-date.
+32. Factors are versioned and never overwritten. An event (chain, ex-date, type) has one
+    version per accepted value: the first, a later pricing (a demerger's ratio version), each
+    correction. Precedence is that order. Every version produced is appended to
+    `ledger/factor_versions.jsonl`, which is never rewritten and records `first_observed_at`.
+33. Each version carries `source_published_at` (its source's publication time, empty if
+    unknown), `first_observed_at` (when this pipeline first produced it) and `available_at`: the
+    latest of every price and source the value and its acceptance read, all in IST. Open-based
+    values: the ex-date at 10:00; close-based: 16:00 on that session; date-only sources: the end
+    of that day. A time is never moved earlier than its evidence. A source without a date makes
+    `available_at` unknown (empty).
+34. HINDSIGHT (`out/hindsight_daily.parquet`): each event at its accepted version of highest
+    precedence, whatever its availability, for research only; `factor_pending` flags bars from
+    an ex-date until the event's first version was available. POINT-IN-TIME REPLAY as of D
+    (`out/replay_daily_asof=D.parquet`): bars up to D, per event the accepted version of highest
+    precedence with `available_at` by the end of D and an ex-date on or before D, and ISIN links
+    whose `known_on` (the new ISIN's first day + 10 days, the window the link rules read) is on or
+    before D. An unknown `available_at` never qualifies. Backtests read the replay.
+35. Adding a version available after D never changes the replay as of D (tested on the pure
+    selection, `versions.select`).
+36. `announced_on` is the first NSE filing naming the event within 180 days before the ex-date.
     It is information only; NSE's `caBroadcastDate` is not used (mostly empty, often after the
     ex-date).
 
 ## Coverage
 
-36. Every weekday is accounted for: a bhavcopy, a listed holiday, a gap (no file and no holiday
+37. Every weekday is accounted for: a bhavcopy, a listed holiday, a gap (no file and no holiday
     list names it) or unaccounted (never fetched). A missing day is never assumed a holiday.
-37. Weekend sessions (Budget Saturdays, Muhurat) are sessions when a bhavcopy exists.
-38. Index history starts later than the bars; only days after an index's first day count.
+38. Weekend sessions (Budget Saturdays, Muhurat) are sessions when a bhavcopy exists.
+39. Index history starts later than the bars; only days after an index's first day count.

@@ -16,7 +16,8 @@ Input: one review row (`table, symbol, isin, ex_date, reason, text, evidence`) f
   the cell empty and say why in `notes`.
 - Every row carries `source_url` and a short verbatim `quote` (the sentence with the number).
 - Fill `source_date` with the date the source was published (filing date, circular date).
-  Without it the value has no `known_on` and is left out of point-in-time (as-of) builds.
+  Without it the value's version has no `available_at` and never enters a point-in-time replay.
+  Never put a date earlier than the source shows.
 - Prefer primary sources: the company's filing on NSE or BSE (record-date intimation, scheme
   of arrangement, letter of offer, allotment outcome), then NSE circulars, then reputable
   financial press. Note which one in `notes`.

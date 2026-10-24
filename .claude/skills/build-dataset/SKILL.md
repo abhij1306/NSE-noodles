@@ -1,6 +1,6 @@
 ---
 name: build-dataset
-description: Run the NSE-noodles pipeline end to end (pull NSE bhavcopies, indices, corporate actions and lists, then build bars, the corporate-action DB, lineage and factors, the adjusted series and the reports), read the counts, and decide what to rerun or hand to research. Use when asked to build, refresh, extend or check the NSE dataset.
+description: Run the NSE-noodles pipeline end to end (pull NSE bhavcopies, indices, corporate actions and lists, then build bars, the corporate-action DB, lineage and factor versions, the hindsight series and the reports), read the counts, and decide what to rerun or hand to research. Use when asked to build, refresh, extend or check the NSE dataset.
 ---
 
 # Build the dataset
@@ -29,8 +29,10 @@ The CLI is `noodles` (`pip install -e .` in this repo). Every step is resumable 
    noodles --data D pull nse --dataset announcements --from 2011-01-01
    ```
    Or everything in order: `noodles --data D run --from 2011-06-22`.
-2. Build: `for s in bars ca-db actions adjusted reports; do noodles --data D build $s; done`
-   (`--curation DIR` if the curation folder is not `D/curation`).
+2. Build: `for s in bars ca-db actions hindsight reports; do noodles --data D build $s; done`
+   (`--curation DIR` if the curation folder is not `D/curation`). For a backtest, also
+   `noodles --data D build replay --as-of YYYY-MM-DD` per cutoff (the point-in-time replay).
+   Keep `D/ledger/` with `D/raw/`: it is append-only and no rebuild recreates it.
 3. Read the printed counts:
    - `bhavcopy.errors` / `indices.errors` / `failed` months: transient, rerun the same pull.
    - `coverage.gap`: weekdays with no file that no holiday list names. Add the true holidays
@@ -40,12 +42,18 @@ The CLI is `noodles` (`pip install -e .` in this repo). Every step is resumable 
      (`no_issue_price`, `non_simple`, `ambiguous`) go to the `research-corporate-action` skill.
    - `reports.jumps` by security: equity jumps go to the `triage-jumps` skill; rights
      entitlements and fund units are expected.
-   - `reports.adjustment_log`: `known_on_unknown` counts actions left out of as-of builds
-     (research or corrections without a source date: add the date); `known_after_ex_open`
-     counts factors a backtest could only use some sessions after the ex-date (see the
-     README's Point in time section).
+   - `actions.available_at_unknown` / `reports.adjustment_log.available_at_unknown`: versions
+     that never enter a replay (research or corrections without a source date: add the date
+     the source shows, never an earlier one); `available_after_ex_date` counts events a
+     backtest could only use some sessions after the ex-date (README, Point in time).
+   - `actions.disputed` / review `demerger_versions_disagree`: a demerger whose ratio-priced
+     factor is more than 10% from its ex-date gap; research the ratio and the dates.
+   - `actions.withdrawn_from_ledger`: versions an earlier build produced and this one did not
+     (a research row edited or removed). Correct through `corrections.tsv` instead, which adds
+     versions.
 4. After curation changes (research CSVs, corrections, lineage overrides), rerun only
-   `build actions`, `build adjusted`, `build reports`.
+   `build actions`, `build hindsight`, `build reports`, and `build replay --as-of D` for every
+   replay a backtest reads (a replay file keeps the versions of the build that wrote it).
 
 ## Done when
 
