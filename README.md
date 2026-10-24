@@ -10,6 +10,11 @@ corporate-action factor checked against the prices before it is used.
 > machine. Those website endpoints are not a documented public API. Respect NSE's terms of use
 > and rate limits: the default pace is one request every 2 seconds, never run two pulls at once,
 > and do not redistribute what you download.
+>
+> **Disclaimer.** The code is provided as is, without warranty of any kind (see `LICENSE`).
+> Nothing here is investment advice. The authors are not responsible for any use or misuse of
+> the code or of data obtained with it, for losses arising from it, or for your compliance with
+> NSE's terms and applicable law.
 
 **Two series, for two jobs.** `out/hindsight_daily.parquet` applies every factor at its latest
 version to all earlier bars, including factors that became known only days or weeks after the
