@@ -41,7 +41,8 @@ disagree, one of them is wrong.
 
 ## Factors
 
-13. A price factor multiplies every price before the ex-date and lies in (0, 1). Adjusted price
+13. A price factor multiplies every price before the ex-date and lies in (0, 1), except a
+    consolidation (reverse split, added by correction), whose factor is above 1. Adjusted price
     = raw x the product of the factors with ex-date after the bar's date, applied once per chain.
     Volume is divided by the same factor.
 14. Split: new face value / old. Bonus x:y: y / (x + y). Bonus + split in one purpose: both legs.

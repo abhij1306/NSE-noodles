@@ -266,6 +266,10 @@ def proposals(con: duckdb.DuckDBPyConnection, research: Sequence[ResearchRow]) -
             if table_of.get(r.table) == p.table and _matches(r, p):
                 p.research.append(r)
                 used.add(i)
+        # research saying the row itself is wrong (another ISIN, date or event) is never used
+        # for its terms: the fix is a correction line, and the row waits in review until then
+        if any(r.wrong.startswith("yes") for r in p.research):
+            p.reason, p.research = "research_says_row_wrong", []
     # research events NSE's feed does not carry become proposals of their own
     extra: dict[tuple[str, str, date], Proposal] = {}
     for i, r in enumerate(research):
@@ -625,6 +629,8 @@ def apply_corrections(
             )
             if c.action_type == "dividend":
                 held["cash"] = value
+        elif c.op == "move" and (chain, c.new_ex_date, c.action_type) in index:
+            status = "destination_exists"  # never overwrite: replace or delete that one first
         elif c.op == "move":
             del index[key]
             held["ex_date"] = c.new_ex_date

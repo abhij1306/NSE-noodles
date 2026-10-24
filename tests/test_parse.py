@@ -76,3 +76,22 @@ def test_dates_and_isins():
     assert parse.ordinary_equity("INE155A01022")
     assert not parse.ordinary_equity("INF204KB17I5")  # a fund unit
     assert not parse.ordinary_equity("INE155A20022")  # a rights entitlement
+
+
+def test_review_fixes():
+    assert parse.split_bonus_legs(
+        "Face Value Subdivision - From Rs 10/- Per Share To Re 1/- Per Share"
+    ) == (Leg("split", Fraction(1, 10)),)
+    assert parse.rights_terms("Rights 1:5 @ Premium Rs 1,000/-", "10") == parse.RightsTerms(
+        Fraction(1), Fraction(5), Fraction(1010)
+    )
+    assert parse.payouts("Rs 50/- Per Share (Special Dividend)") == (
+        Payout("special", Decimal(50)),
+    )
+    # a row that only names a dividend is ignored; one with an unreadable figure fails the group
+    assert parse.combine(["Dividend - Rs 2 Per Share", "Annual General Meeting/Dividend"]) == (
+        Payout("final", Decimal(2)),
+    )
+    assert parse.combine(["Dividend - Rs 2 Per Share", "Dividend - Rs Two Per Share"]) == (
+        "no_amount"
+    )

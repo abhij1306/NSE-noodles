@@ -96,6 +96,19 @@ class ResearchRow:
     notes: str
 
 
+def _date(r: dict[str, str], key: str, where: str, required: bool = False) -> date | None:
+    """A research date cell: empty is None (unless required); anything unreadable is an error,
+    never a silently dropped row."""
+    if not r[key]:
+        if required:
+            raise CurationError(f"{where}: {key} is required")
+        return None
+    day = parse.nse_date(r[key])
+    if day is None:
+        raise CurationError(f"{where}: bad {key} {r[key][:20]!r}")
+    return day
+
+
 def read_research(folder: Path) -> list[ResearchRow]:
     out = []
     for path in sorted(folder.glob("*.csv")) if folder.is_dir() else []:
@@ -106,6 +119,7 @@ def read_research(folder: Path) -> list[ResearchRow]:
                 raise CurationError(f"{path.name}: missing columns {sorted(missing)}")
             for n, row in enumerate(reader, start=2):
                 r = {k: (row.get(k) or "").strip()[:2000] for k in RESEARCH_COLUMNS}
+                where = f"{path.name}:{n}"
                 a, b = number(r["ratio_a"]), number(r["ratio_b"])
                 out.append(
                     ResearchRow(
@@ -114,7 +128,7 @@ def read_research(folder: Path) -> list[ResearchRow]:
                         r["table"].lower(),
                         r["symbol"].upper(),
                         r["isin"].upper(),
-                        parse.nse_date(r["ex_date"]),
+                        _date(r, "ex_date", where, required=True),
                         r["leg_type"].lower(),
                         r["resulting_symbol"].upper(),
                         r["resulting_isin"].upper(),
@@ -125,11 +139,11 @@ def read_research(folder: Path) -> list[ResearchRow]:
                         number(r["coa_resulting_pct"]),
                         r["non_equity_consideration"],
                         number(r["value_per_share_rs"]),
-                        parse.nse_date(r["record_date"]),
+                        _date(r, "record_date", where),
                         r["our_data_wrong"].lower(),
                         CONFIDENCE.get(r["confidence"].lower(), 0),
                         r["source_url"],
-                        parse.nse_date(r["source_date"]),
+                        _date(r, "source_date", where),
                         r["quote"],
                         r["notes"],
                     )
@@ -152,8 +166,9 @@ class Correction:
 
 def read_corrections(path: Path) -> list[Correction]:
     """`op isin ex_date type value new_ex_date note [known_on]`, tab-separated. `value` is the
-    factor (0 < f < 1 for a price factor; a public-only bonus is old shares / new shares) or,
-    for type `dividend`, rupees per share. Every line must carry a note (the evidence).
+    factor (0 < f < 1 for a price factor; a public-only bonus is old shares / new shares; a
+    split is new face value / old, so a consolidation (reverse split) is above 1) or, for type
+    `dividend`, rupees per share. Every line must carry a note (the evidence).
     `known_on` is when the corrected value was public; without it an added or replaced value
     is left out of point-in-time (as-of) builds."""
     if not path.exists():
@@ -176,7 +191,8 @@ def read_corrections(path: Path) -> list[Correction]:
             or not parse.ISIN_RE.match(isin.upper())
             or not note
             or (op in ("add", "replace") and (f is None or f <= 0))
-            or (op in ("add", "replace") and kind != "dividend" and not f < 1)  # type: ignore[operator]
+            or (op in ("add", "replace") and kind not in ("dividend", "split") and not f < 1)  # type: ignore[operator]
+            or (op in ("add", "replace") and kind == "split" and f == 1)
             or (op == "move" and parse.nse_date(new_ex) is None)
             or (bool(known) and parse.nse_date(known) is None)
         )

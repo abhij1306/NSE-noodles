@@ -63,6 +63,7 @@ class NseClient:
         if self._client is not None:
             self._client.close()
             self._client = None
+        self._warm = False  # the cookies went with the session
 
     def _session(self) -> httpx.Client:
         if self._client is None:

@@ -130,7 +130,7 @@ _SPLIT_START = re.compile(r"face\s*val\w*\s*split|split|sub-?\s*division")
 
 def _one_leg(text: str) -> Leg | None:
     lowered = text.lower()
-    if "split" in lowered or "sub-division" in lowered or "sub division" in lowered:
+    if _SPLIT_START.search(lowered):
         pair = split_pair(lowered)
         if pair is not None and 0 < pair[1] / pair[0] < 1:
             return Leg(SPLIT, pair[1] / pair[0])
@@ -192,7 +192,8 @@ class RightsTerms:
 
 
 _RIGHTS_RATIO = re.compile(rf"\brights?\b(?:\s*issue)?[\s:@-]*{_NUMBER}\s*:\s*{_NUMBER}")
-_PREMIUM = re.compile(rf"\b(?:premium|prem|prm)\b\s*(?:of\s*)?(?:(?:rs|re)\b\.?)?\s*{_NUMBER}")
+_GROUPED = r"(\d{1,3}(?:,\d{2,3})+(?:\.\d+)?|\d+(?:\.\d+)?)"  # 1,000 and 1,00,000 too
+_PREMIUM = re.compile(rf"\b(?:premium|prem|prm)\b\s*(?:of\s*)?(?:(?:rs|re)\b\.?)?\s*{_GROUPED}")
 _AT_PAR = re.compile(r"(?:\bat|@)\s*par\b")
 _NON_SIMPLE = re.compile(r"warrant|ccps|ccd|convertible|debenture|partly|preference|\bncd")
 
@@ -213,7 +214,7 @@ def rights_terms(text: str, face_value: str) -> RightsTerms | str:
         return "unparsed"
     premiums = _PREMIUM.findall(lowered)
     if len(premiums) == 1:
-        premium = Fraction(premiums[0])
+        premium = Fraction(premiums[0].replace(",", ""))
     elif not premiums and _AT_PAR.search(lowered):
         premium = Fraction(0)
     else:
@@ -295,6 +296,19 @@ def _clause(prefix: str, body: str) -> list[Payout] | str:
     return found
 
 
+def _labelled(prefix: str) -> list[Payout] | str:
+    """The one amount before a bracketed label, of the label's kind."""
+    amount, label = prefix.rsplit("(", 1)
+    found = _MONEY.findall(amount) or _BARE.findall(amount)
+    if len(found) != 1:
+        return "several_amounts" if found else "no_amount"
+    value = Decimal(found[0])
+    return [Payout(_kind(label), value)] if value > 0 else "no_amount"
+
+
+_FIGURE = re.compile(r"\b(?:rs|re|inr)\b|₹|per\s*(?:equity\s*)?sh|\d\s*/-|\d\s*%")
+
+
 def total(parts: tuple[Payout, ...] | list[Payout]) -> Decimal:
     return sum((p.amount for p in parts), Decimal(0))
 
@@ -318,6 +332,8 @@ def payouts(text: str) -> tuple[Payout, ...] | str:
         seps = list(_SEP.finditer(before))
         prefix = before[seps[-1].end() :] if seps else before
         parts = _clause(prefix, lowered[match.end() : stop])
+        if parts == []:  # "Rs 50/- Per Share (Special Dividend)": the amount is in the prefix
+            parts = _labelled(prefix)
         if parts == "preference_dividend":
             preference = True
         elif isinstance(parts, str):
@@ -343,11 +359,14 @@ def combine(subjects: list[str]) -> tuple[Payout, ...] | str:
     """The payouts of one (ISIN, ex-date)'s feed rows. NSE keeps revisions as separate rows:
     identical rows count once, rows naming different kinds add up, and rows giving one kind
     different amounts are settled by the "(Purpose Revised)" rows when those agree, else
-    `rows_disagree`."""
+    `rows_disagree`. A row that only names a dividend ("AGM / Dividend") is ignored; a row
+    with a figure that does not read fails the group."""
     read: dict[str, tuple[Payout, ...]] = {}
     failed: list[str] = []
     for subject in subjects:
         found = payouts(subject)
+        if found == "no_amount" and _FIGURE.search(subject.lower()):
+            return "no_amount"  # a row with a figure we cannot read: never a partial sum
         if isinstance(found, str):
             failed.append(found)
         else:

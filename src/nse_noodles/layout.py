@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
@@ -26,9 +27,14 @@ from pathlib import Path
 
 def atomic_write(path: Path, write: Callable[[Path], None]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp")
-    write(tmp)
-    os.replace(tmp, path)
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    os.close(fd)
+    tmp = Path(name)
+    try:
+        write(tmp)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def write_bytes(path: Path, data: bytes) -> None:

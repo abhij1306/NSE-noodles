@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 from bisect import bisect_left
+from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -42,6 +43,17 @@ SELECT 'lineage', 'lineage', json_extract_string(evidence, '$.new_symbol'),
 FROM lineage WHERE status = 'review'
 ORDER BY day DESC
 """
+
+
+def _by_key(rows: list[tuple]) -> dict[tuple[str, str], list[tuple[date, str]]]:
+    """(symbol, isin, ex_date, text) rows indexed by symbol and by ISIN, so each jump reads
+    only its own rows."""
+    out: dict[tuple[str, str], list[tuple[date, str]]] = defaultdict(list)
+    for sym, isin, ex, text in rows:
+        if ex:
+            out[("s", sym)].append((ex, text))
+            out[("i", isin)].append((ex, text))
+    return out
 
 
 def jumps(layout: Layout) -> pl.DataFrame:
@@ -85,21 +97,15 @@ def jumps(layout: Layout) -> pl.DataFrame:
             if _has(con, "review")
             else []
         )
+    feed_by, review_by = _by_key(feed), _by_key(review)
     feed_hint, review_hint = [], []
     for row in found.iter_rows(named=True):
         lo, hi = row["date"] - timedelta(days=HINT_DAYS), row["date"] + timedelta(days=HINT_DAYS)
-        f = [
-            s
-            for sym, isin, ex, s in feed
-            if ex and lo <= ex <= hi and (sym == row["symbol"] or isin == row["isin"])
-        ]
-        r = [
-            s
-            for sym, isin, ex, s in review
-            if ex and lo <= ex <= hi and (sym == row["symbol"] or isin == row["isin"])
-        ]
-        feed_hint.append(" | ".join(sorted(set(f)))[:300])
-        review_hint.append(",".join(sorted(set(r))))
+        keys = (("s", row["symbol"]), ("i", row["isin"]))
+        f = {s for k in keys for ex, s in feed_by.get(k, ()) if lo <= ex <= hi}
+        r = {s for k in keys for ex, s in review_by.get(k, ()) if lo <= ex <= hi}
+        feed_hint.append(" | ".join(sorted(f))[:300])
+        review_hint.append(",".join(sorted(r)))
     found = found.with_columns(
         pl.Series("feed_near", feed_hint, pl.Utf8), pl.Series("review_near", review_hint, pl.Utf8)
     )

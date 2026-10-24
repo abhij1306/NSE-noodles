@@ -195,6 +195,7 @@ bar of the new ISIN's first ten days, the window the link rules read.
 | `needs_research:*` | A demerger with no ratio/CoA cross-check whose gap alone is not enough | Research the scheme: ratio, resulting company, CoA |
 | `gap_disagrees_*`, `no_cross_check_*` | A demerger gap not accepted: date unconfirmed, drop under 10%, or not held five sessions on | Research; correct by hand if confirmed |
 | `low_confidence`, `date_disputed` | Research is weak or names another date | More sources |
+| `research_says_row_wrong` | A research row marks NSE's row itself wrong (`our_data_wrong = yes`); its terms are not used | A correction line (`delete`, `move` or `add`) |
 | `needs_value` | A bonus of debentures/preference shares without a researched value | Research the value per share |
 | `amount_vs_price`, `percent_of_face_value`, `rows_disagree`, ... | A dividend that cannot be trusted as written | Check the filing |
 | Lineage `price_jump`, `prev_close_mismatch`, `long_gap`, `restructuring`, `ambiguous` | An ISIN succession the rules could not prove | Link or unlink in `lineage_overrides.tsv` after checking |
@@ -219,7 +220,8 @@ add. It is input, never output, and is re-applied on every rebuild.
   `known_on` and stays out of as-of builds.
 - `corrections.tsv`: reviewed fixes, `op isin ex_date type value new_ex_date note [known_on]`
   (tab-separated; `op` is add / replace / delete / move; `value` is the factor, or rupees per
-  share for `dividend`; `known_on` is when the corrected value was public). Every line needs a
+  share for `dividend`; a `split` factor is new face value / old, so a consolidation is above
+  1; `known_on` is when the corrected value was public). Every line needs a
   note with its evidence:
   ```tsv
   add	INE000X01011	2019-12-19	split	0.1		NSE circular: unit face value 10 -> 1; gap 0.1003	2019-12-10

@@ -24,7 +24,8 @@ is a factor problem.
    - ratio 0.2-0.9 on a parent company with a new listing named like it around the date: a
      demerger at the market gap.
    - ratio above 1.25: a consolidation (reverse split), a relisting after suspension, or a wrong
-     factor stored earlier. Check `actions` for that chain near the date.
+     factor stored earlier. Check `actions` for that chain near the date. A consolidation is a
+     `split` correction with factor new face value / old (above 1, e.g. 10 for Re 1 -> Rs 10).
 3. Classify every jump as one of:
    - `missing_factor` -> a research row (rights, demerger, bonus instrument) or a correction
      line (`add` with the factor and the bar evidence in the note);

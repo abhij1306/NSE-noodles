@@ -41,10 +41,13 @@ Input: one review row (`table, symbol, isin, ex_date, reason, text, evidence`) f
   preference share issued per equity share, and whether every holder received it (say
   "non-promoter only" in `notes` if not).
 - **public-only bonus** (from an `ambiguous` bonus): shares before and after the allotment.
-  This becomes a correction line (`replace`, factor = before / after), not a research row:
-  give the counts and the source in your summary.
+  This becomes a correction line, not a research row: `add` with factor = before / after (an
+  `ambiguous` bonus waits in review and was never accepted, so `replace` would find nothing
+  and log `not_found`; use `replace` only for a bonus already in `actions`). Give the counts
+  and the source in your summary.
 - If the row's data is wrong (another ISIN, another date, not a demerger at all), say so in
-  `our_data_wrong` (`yes: ...`).
+  `our_data_wrong` (`yes: ...`). Such a row's terms are never used: the event goes to review
+  as `research_says_row_wrong` until a correction line fixes the row.
 
 ## Confidence
 
