@@ -52,7 +52,8 @@ The CLI is `noodles` (`pip install -e .` in this repo). Every step is resumable 
      (a research row edited or removed). Correct through `corrections.tsv` instead, which adds
      versions.
 4. After curation changes (research CSVs, corrections, lineage overrides), rerun only
-   `build actions`, `build hindsight`, `build reports`.
+   `build actions`, `build hindsight`, `build reports`, and `build replay --as-of D` for every
+   replay a backtest reads (a replay file keeps the versions of the build that wrote it).
 
 ## Done when
 
