@@ -546,3 +546,21 @@ def test_research_dating_the_event_otherwise_sends_it_to_review(tmp_path, tables
     layout, curation = _archive(tmp_path, PRICES, tables, [research])
     summary = actions.build(layout, curation, NOW)
     assert (summary["events"], summary["review"]) == ({}, {"date_disputed": 1})
+
+
+def test_cash_paid_together_is_checked_against_the_price_together(tmp_path):
+    # Rs 15 and a Rs 12 debenture are each under half the previous close of 50, but not together
+    day = date(2026, 10, 5)
+    tables = {
+        "dividends": [_feed("d", subjects="Dividend", status="ok", amount=15.0, kinds="final",
+                            ex_date=day)],
+        "bonus_instruments": [_feed("b", subject="Bonus NCD", ex_date=day)],
+    }  # fmt: skip
+    research = {**A_SPLIT_RESEARCH, "table": "bonus_instrument", "leg_type": "bonus_instrument",
+                "ex_date": str(day), "value_per_share_rs": "12"}  # fmt: skip
+    layout, curation = _archive(tmp_path, A_ONLY, tables, [_research_row(**research)])
+    summary = actions.build(layout, curation, NOW)
+    assert (summary["events"], summary["review"]) == ({}, {"amount_vs_price": 1})
+    assert _built(layout, "review", "ex_date, reason, evidence") == [
+        (day, "amount_vs_price", '{"cash": "27.0", "previous_close": 50.0}')
+    ]

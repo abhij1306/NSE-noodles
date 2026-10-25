@@ -731,11 +731,16 @@ def decide_demerger(
     return found
 
 
+def _previous(series: list[Bar], ex: date) -> Bar | None:
+    before = [b for b in series if b.day < ex and (ex - b.day).days <= BAR_DAYS]
+    return before[-1] if before else None
+
+
 def _previous_bar(p: Proposal, series: list[Bar], out: Outcome) -> Bar | None:
     """The last session before the ex-date; None (skipped or reviewed) when there is none near."""
-    before = [b for b in series if b.day < p.ex_date and (p.ex_date - b.day).days <= BAR_DAYS]
-    if before:
-        return before[-1]
+    prev = _previous(series, p.ex_date)
+    if prev is not None:
+        return prev
     if series and p.ex_date <= series[0].day:
         out.skipped.append(_row(p, "before_bars"))
     else:
@@ -1200,12 +1205,35 @@ def _same_day(accepted: list[dict], chain: str, series: list[Bar], ex: date) -> 
     )
 
 
-def _add_cash(cash: dict[tuple[str, date], dict], key: tuple[str, date], got: dict) -> None:
-    held = cash.get(key)
-    if held is None:
-        cash[key] = got
-        return
-    # a dividend and a bonus distribution on one day: one cash row
+class _CashDays:
+    """One cash row per chain and ex-date: a dividend and a bonus distribution on one day are
+    summed, and the sum passes the same yield check as each one (None once reviewed)."""
+
+    def __init__(self) -> None:
+        self.rows: dict[tuple[str, date], dict | None] = {}
+
+    def add(self, chain: str, p: Proposal, got: dict, series: list[Bar], out: Outcome) -> None:
+        key = (chain, p.ex_date)
+        if key not in self.rows:
+            self.rows[key] = got
+            return
+        held = self.rows[key]
+        if held is None:  # the day's cash is already a review case
+            out.review.append(_row(p, "amount_vs_price"))
+            return
+        _merge_cash(held, got)
+        prev = _previous(series, p.ex_date)
+        total = Decimal(str(held["cash"]))
+        if prev is not None and factors.over_yield(total, Decimal(str(prev.close))):
+            evidence = {"previous_close": prev.close, "cash": str(total)}
+            out.review.append(_row(p, "amount_vs_price", evidence))
+            self.rows[key] = None
+
+    def accepted(self) -> list[dict]:
+        return [r for r in self.rows.values() if r is not None]
+
+
+def _merge_cash(held: dict, got: dict) -> None:
     held["cash"] += got["cash"]
     held["method"] += "+" + got["method"]
     held["basis"] += "+" + got["basis"]
@@ -1228,7 +1256,7 @@ def _decide_events(
 ) -> None:
     """Demergers, then cash (one row per chain and ex-date), onto `out`."""
     done: set[tuple] = set()
-    cash: dict[tuple[str, date], dict] = {}
+    cash = _CashDays()
     for p, chain in sorted(later, key=lambda x: (x[0].table, x[0].ex_date)):
         key = _event_key(p, chain, series[chain])
         if key in done:
@@ -1243,8 +1271,8 @@ def _decide_events(
             continue
         got = decide_cash(chain, p, series[chain], out)
         if got:
-            _add_cash(cash, (chain, p.ex_date), got)
-    out.accepted += list(cash.values())
+            cash.add(chain, p, got, series[chain], out)
+    out.accepted += cash.accepted()
 
 
 def _write_results(
