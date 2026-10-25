@@ -150,9 +150,13 @@ Replace `DATA` with your data directory (in Python, write `~` paths out in full)
 
 - Every step is resumable and idempotent. After an interruption, run the same command again:
   finished days and months are skipped.
-- To extend the data, run `run --from <last bar day>`. The menu suggests this. NSE posts a
-  day's files in the evening; a 404 for a day within the last 5 days is asked again on the next
-  pull.
+- To extend the data, run `run --from <last bar day>`. The menu suggests this. Or set
+  `[run] from` in `noodles.toml` once and schedule a plain `run`
+  ([maintaining](maintaining.md)). NSE posts a day's files in the evening; a 404 for a day
+  within the last 5 days is asked again on the next pull.
+- When pulls keep failing, `noodles --data DATA doctor` says which source broke and how to fix
+  it. When downloading does not work at all, `noodles --data DATA import` takes files you
+  downloaded yourself ([maintaining](maintaining.md)).
 - The corporate-action feed for the month in progress is fetched again on every pull, so
   rerunning `pull nse` picks up new rows.
 - After changing the curation folder, rerun `build actions`, `hindsight`, `reports` and your

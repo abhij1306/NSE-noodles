@@ -14,7 +14,7 @@ under its canonical name:
 
 A folder is read through; a zip that is not itself a bhavcopy is opened and each file in it
 read (zips inside it too, one level). A file that names a day in its name but holds another
-day's rows is refused.
+day's rows is refused. Another data folder's `raw/` imports whole (its bookkeeping is skipped).
 
 A day already on disk with other bytes is a conflict and left alone, unless `replace`:
 replacing it deletes the day's parsed file, so the next build reads the new one. A list is a
@@ -47,6 +47,7 @@ LIST_KINDS = {
 KINDS = (*DAY_KINDS, *JSON_KINDS, *LIST_KINDS)
 MAX_ENTRY = 512 * 1024 * 1024  # a zip entry larger than this is not read
 _SKIP = ("__MACOSX/", ".")
+OWN_FILES = {"not_found.json", "imports.jsonl", "noodles.toml"}  # noodles' bookkeeping, skipped
 
 
 @dataclass(frozen=True)
@@ -77,7 +78,8 @@ def _text(data: bytes) -> str:
 def _zip(entry: str, data: bytes) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(entry, data)
+        # a fixed timestamp: the same CSV imported twice is the same zip, never a conflict
+        archive.writestr(zipfile.ZipInfo(entry, (1980, 1, 1, 0, 0, 0)), data, zipfile.ZIP_DEFLATED)
     return buf.getvalue()
 
 
@@ -202,11 +204,12 @@ def plan(layout: Layout, name: str, data: bytes, kind: str, market: str) -> Plan
 
 
 def files(paths: list[Path]) -> Iterator[tuple[str, bytes]]:
-    """(label, bytes) of every file under `paths`, folders read through in name order."""
+    """(label, bytes) of every file under `paths`, folders read through in name order; hidden
+    files and noodles' own bookkeeping (another data folder's `raw/` imports as is) skipped."""
     for path in paths:
         if path.is_dir():
             yield from files(sorted(p for p in path.rglob("*") if p.is_file()))
-        elif not path.name.startswith("."):
+        elif not path.name.startswith(".") and path.name not in OWN_FILES:
             yield str(path), path.read_bytes()
 
 

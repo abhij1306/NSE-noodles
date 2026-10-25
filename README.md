@@ -53,6 +53,10 @@ uv run noodles --data ~/nse-data run --from 2026-09-01 --to 2026-10-23
 uv run noodles --data ~/nse-data build replay --as-of 2026-10-15
 ```
 
+To keep it current, rerun `run` (it skips what is on disk) or schedule it, and run `doctor` when
+NSE changes something: [maintaining](docs/maintaining.md). Or install the command once:
+`uv tool install git+https://github.com/abhij1306/NSE-noodles`, then `noodles ...` anywhere.
+
 These commands are the same in PowerShell. Keep the data folder outside any git repository.
 Without `--from`, `run` pulls the full history: 4 to 5 hours at the polite pace, resumable.
 Details, time and disk estimates, and how to check the result:
@@ -76,6 +80,8 @@ Every file and column: [outputs](docs/outputs.md).
 - [Getting started](docs/getting-started.md): install, first run, full history, checking it
   worked, resuming.
 - [Command line](docs/cli.md): every command and flag, the menu, exit codes, printed counts.
+- [Maintaining](docs/maintaining.md): scheduled updates, the `noodles.toml` settings, `doctor`
+  when NSE changes something, `import` for files you downloaded yourself.
 - [Outputs](docs/outputs.md): every file, column and database table.
 - [Backtesting](docs/backtesting.md): hindsight vs replay, dividends, the demerger exit
   calendar.
@@ -84,9 +90,9 @@ Every file and column: [outputs](docs/outputs.md).
 - [Method](docs/method.md): the rules the code keeps, the sources, and the limits.
 - [Glossary](docs/glossary.md): bhavcopy, ex-date, record date, TERP, UDiFF and the rest.
 
-**Agent skills.** `.claude/skills/` holds skills for Claude Code (or any agent that reads
-`SKILL.md`): `build-dataset`, `research-corporate-action`, `triage-jumps`, `review-lineage`
-and `use-in-backtest`.
+**Agent skills (optional).** Nothing here needs an AI agent. For the review work that needs
+judgement and web research, `.claude/skills/` holds skills for Claude Code (or any agent that
+reads `SKILL.md`): `research-corporate-action`, `triage-jumps` and `review-lineage`.
 
 ## Development
 
