@@ -94,11 +94,12 @@ def describe(st: Status) -> list[str]:
         f"  price bars        {bars}",
         f"  index days        {st.index_days}",
     ]
-    for key, count in st.nse_files.items():
-        lines.append(f"  {key:<17} {count} month files")
-    lines.append(f"  lists             {', '.join(st.lists) or 'not pulled'}")
-    lines.append(f"  database          {'built' if st.database else 'not built'}")
-    lines.append(f"  outputs           {', '.join(st.outputs) or 'none yet'}")
+    lines += [f"  {key:<17} {count} month files" for key, count in st.nse_files.items()]
+    lines += [
+        f"  lists             {', '.join(st.lists) or 'not pulled'}",
+        f"  database          {'built' if st.database else 'not built'}",
+        f"  outputs           {', '.join(st.outputs) or 'none yet'}",
+    ]
     if st.review_rows is not None:
         lines.append(f"  review list       {st.review_rows} rows waiting (out/review.csv)")
     return lines

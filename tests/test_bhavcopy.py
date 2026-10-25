@@ -51,8 +51,9 @@ def test_parse_needs_exactly_one_csv():
     with zipfile.ZipFile(buf, "w") as archive:
         archive.writestr("a.csv", HEADER)
         archive.writestr("b.csv", HEADER)
+    data = buf.getvalue()
     with pytest.raises(ValueError, match="exactly one CSV"):
-        bhavcopy.parse(DAY, buf.getvalue())
+        bhavcopy.parse(DAY, data)
 
 
 class FakeClient:
