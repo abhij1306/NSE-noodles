@@ -477,3 +477,26 @@ def test_a_link_is_known_once_every_window_the_rules_read_has_passed(tmp_path, l
     assert _built(layout, "lineage", "old_isin, new_isin, effective, known_on") == [
         ("INE000E01011", "INE000F01011", EX, known_on)
     ]
+
+
+B_DEMERGER = {"demergers": [_demerger_row(isin="INE000B01011", symbol="BBB", ex_date=DEMERGER)]}
+
+
+def test_a_resulting_symbol_never_names_the_parent_itself(tmp_path):
+    # the parent keeps trading as BBB: it is not the resulting company research calls BBB
+    research = [_research_row(resulting_symbol="BBB", resulting_isin="")]
+    layout, curation = _archive(tmp_path, PRICES, B_DEMERGER, research)
+    summary = actions.build(layout, curation, NOW)
+    assert (summary["review"], summary["disputed"]) == ({}, 0)
+    assert _built(layout, "factor_versions", "action_type, value, basis") == [
+        ("demerger", 0.75, "index_neutral_gap")
+    ]
+
+
+def test_two_new_listings_under_the_resulting_symbol_go_to_review(tmp_path):
+    second = _bars("INE000D01011", {date(2026, 10, 19): 40.0}, date(2026, 10, 19), LAST)
+    prices = {**PRICES, ("INE000D01011", "CCC"): second}
+    research = [_research_row(resulting_isin="")]
+    layout, curation = _archive(tmp_path, prices, B_DEMERGER, research)
+    summary = actions.build(layout, curation, NOW)
+    assert (summary["events"], summary["review"]) == ({}, {"resulting_company_ambiguous": 1})

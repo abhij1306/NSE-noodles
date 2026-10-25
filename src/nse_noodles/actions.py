@@ -65,6 +65,7 @@ BAR_DAYS = 14  # the previous session and the ex session must fall this close to
 WINDOW_DAYS = 25  # calendar days of bars read each side of an ex-date
 SYMBOL_SLACK = 15  # a feed symbol names the ISINs that traded under it this close to the date
 CHILD_DAYS = 366  # a resulting company lists within a year of the demerger
+CHILD_SLACK = 5  # ... and never trades earlier than this before the ex-date
 RECORD_DAYS = 7  # a record date falls this soon after the ex-date
 DISPUTE_DAYS = 60
 # feed dividend statuses that are not a cash dividend on an equity share: skipped, not reviewed
@@ -1084,21 +1085,33 @@ class Resolved:
     wanted: list[tuple[str, date, date]] = field(default_factory=list)
 
 
-def _listed_as(symbol: str, ex: date, chains: Chains) -> str:
-    """The first ISIN that still traded under `symbol` on or after the ex-date."""
+def _listed_as(symbol: str, ex: date, chains: Chains, parent: str) -> list[str]:
+    """The ISINs that first traded under `symbol` from CHILD_SLACK before the ex-date on, outside
+    the parent's chain: a resulting company is a new listing, never an older one or the parent."""
     if not symbol:
-        return ""
-    return next((i for i, _, last in chains.by_symbol.get(symbol, ()) if last >= ex), "")
+        return []
+    since = ex - timedelta(days=CHILD_SLACK)
+    return sorted(
+        i
+        for i, first, last in chains.by_symbol.get(symbol, ())
+        if first >= since and last >= ex and chains.head.get(i, i) != parent
+    )
 
 
-def _research_children(p: Proposal, chains: Chains, got: Resolved) -> None:
+def _children(p: Proposal, chain: str, chains: Chains) -> dict[tuple[str, int], str] | None:
+    """(file, line) -> the resulting company each research row names ("" when unknown); None
+    when a row's symbol names more than one new listing."""
+    found = {}
     for r in p.research:
-        child = r.resulting_isin or _listed_as(r.resulting_symbol, p.ex_date, chains)
-        got.children[(r.file, r.line)] = child
-        if child:
-            got.wanted.append(
-                (child, p.ex_date - timedelta(days=5), p.ex_date + timedelta(days=CHILD_DAYS))
-            )
+        named = (
+            [r.resulting_isin]
+            if r.resulting_isin
+            else _listed_as(r.resulting_symbol, p.ex_date, chains, chain)
+        )
+        if len(named) > 1:
+            return None
+        found[(r.file, r.line)] = named[0] if named else ""
+    return found
 
 
 def _resolve(props: list[Proposal], chains: Chains, out: Outcome) -> Resolved:
@@ -1115,10 +1128,17 @@ def _resolve(props: list[Proposal], chains: Chains, out: Outcome) -> Resolved:
         if chain is None:
             _skip_sme(out, p, "no_instrument")
             continue
+        children = _children(p, chain, chains)
+        if children is None:
+            out.review.append(_row(p, "resulting_company_ambiguous"))
+            continue
         got.pairs.append((p, chain))
         lo, hi = p.ex_date - timedelta(days=WINDOW_DAYS), p.ex_date + timedelta(days=WINDOW_DAYS)
         got.wanted += [(m, lo, hi) for m in chains.members[chain]]
-        _research_children(p, chains, got)
+        got.children |= children
+        since = p.ex_date - timedelta(days=CHILD_SLACK)
+        until = p.ex_date + timedelta(days=CHILD_DAYS)
+        got.wanted += [(child, since, until) for child in children.values() if child]
     return got
 
 
