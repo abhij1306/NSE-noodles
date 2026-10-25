@@ -26,6 +26,8 @@ from . import actions, adjusted, bhavcopy, ca_db, exits, indices, interactive, n
 from .http import DEFAULT_INTERVAL, NseClient
 from .layout import Layout
 
+BUILD_STEPS = ("bars", "ca-db", "actions", "hindsight", "reports")  # `run` builds these in order
+
 
 def _day(raw: str) -> date:
     return datetime.strptime(raw, "%Y-%m-%d").date()
@@ -224,23 +226,23 @@ def _run(layout: Layout, client: NseClient, args: argparse.Namespace) -> bool:
     return all(ok)
 
 
-def _run_argv(argv: list[str]) -> int:
-    """`main` for the interactive menu: the exit code instead of SystemExit."""
-    try:
-        main(argv)
-    except SystemExit as exc:
-        return exc.code if isinstance(exc.code, int) else 1
-    return 0
-
-
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
-    if not argv:  # no arguments: the guided menu
+    if argv:
+        code = run(argv)
+    else:  # no arguments: the guided menu
         try:
-            code = interactive.main(input, print, _run_argv)
-        except (EOFError, KeyboardInterrupt):
+            code = interactive.main(input, print, run)
+        except EOFError:
             code = 0
+        except KeyboardInterrupt:
+            raise SystemExit(130) from None
+    if code:
         raise SystemExit(code)
+
+
+def run(argv: list[str]) -> int:
+    """Run one command line; 1 when a download or a build step failed, else 0."""
     args = _parser().parse_args(argv)
     logging.basicConfig(
         level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(message)s"
@@ -253,11 +255,10 @@ def main(argv: list[str] | None = None) -> None:
     else:
         with NseClient(interval=args.interval) as client:
             ok = _pull(layout, client, args) if args.cmd == "pull" else _run(layout, client, args)
-        if args.cmd == "run":
-            steps = ("bars", "ca-db", "actions", "hindsight", "reports")
-            ok = all([build_step(layout, step, args) for step in steps]) and ok
-    if not ok:
-        raise SystemExit(1)
+        if args.cmd == "run":  # every step runs, even after one fails
+            built = [build_step(layout, step, args) for step in BUILD_STEPS]
+            ok = ok and all(built)
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

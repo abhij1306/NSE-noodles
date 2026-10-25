@@ -109,13 +109,17 @@ def parse_ratio(raw: str) -> tuple[Fraction, Fraction] | None:
     return (a, b) if a > 0 and b > 0 else None
 
 
+# the char before the ratio is consumed, not looked behind: no match starts inside a number
+_BONUS_RATIO = re.compile(r"(?:^|[^\d.])(\d++)\s*+:\s*+(\d++)(?!\.\d)")
+
+
 def bonus_ratio(text: str) -> tuple[int, int] | None:
     """The first `a:b` of whole numbers after the word "bonus" ("1.5:1" is none)."""
     lowered = text.lower()
     at = lowered.find("bonus")
     if at < 0:
         return None
-    found = re.search(r"(?<![\d.])(\d++)\s*+:\s*+(\d++)(?!\.\d)", lowered[at:])
+    found = _BONUS_RATIO.search(lowered[at:])
     return (int(found[1]), int(found[2])) if found else None
 
 
@@ -266,7 +270,7 @@ DIVIDEND_WORD = re.compile(r"dividend|(?<!sub)(?<!sub-)(?<!sub )\bdiv\b", re.I)
 _DIVIDEND = DIVIDEND_WORD
 _MONEY = re.compile(rf"(?:\b(?:rs|re|inr)\b\.?|₹)\s*+(?:[-:]\s*+)?{_GROUPED}")
 _PAISE = re.compile(r"\bpaise\b|\bpaisa\b")
-_PERCENT = re.compile(r"(?<![\d.])\d++(?:\.\d++)?+\s*+%")
+_PERCENT = re.compile(r"\d\s*+%")  # only ever searched for: some number then %
 _SEP = re.compile(r"/(?!-)|\band\b|&|\+|;|,")
 _PREFERENCE = re.compile(r"preference|\bpref\b|\bc?n?c?rps\b|\bcps\b")
 _KIND = re.compile(r"\b(final|special|interim)\b")
