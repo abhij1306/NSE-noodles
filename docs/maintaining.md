@@ -62,7 +62,7 @@ About a dozen requests, at the usual pace. Each source comes back as one of thes
 | `ok` | Answered in the format noodles reads | Nothing |
 | `not_found` | 404 for a week of days that should have files: NSE moved it | Find the new address on nseindia.com and set the source's `url` (below), or switch the source to `manual` and import |
 | `blocked` | No answer after retries, an HTTP error, or a web page instead of data | Try later, or raise `[network] interval`; or download in a browser and import |
-| `format_changed` | Data, but not in a format noodles reads | The parser needs a code change: open an issue with the URL. `import` takes files in the known formats meanwhile |
+| `format_changed` | Data, but not in a format noodles reads | Renamed bhavcopy columns: [name them](#renamed-bhavcopy-columns). Otherwise the parser needs a code change: open an issue with the URL; `import` takes files in the known formats meanwhile |
 | `manual` | `mode = "manual"`: not asked | — |
 
 The exit code is 1 when any source is not `ok` or `manual`.
@@ -112,6 +112,24 @@ The JSON feeds take no fields: noodles adds `index`, `from_date` and `to_date` a
 parameters, as NSE's website does. Files are always saved under their name in `raw/`, whatever
 the URL, so the build reads them the same.
 
+### Renamed bhavcopy columns
+
+When NSE renames columns of the UDiFF bhavcopy but keeps the file's shape (one CSV, one row per
+security and series), name the new headers in `[bhavcopy_columns]`. Fields you leave out keep
+their UDiFF headers:
+
+```toml
+[bhavcopy_columns]
+open = "OpenPrice"      # was OpnPric
+date = "TradeDate"      # was TradDt
+```
+
+The fields are `date`, `isin`, `series`, `symbol`, `open`, `high`, `low`, `close`,
+`prev_close`, `volume` and `traded_value`. A header with the named columns is read as a third
+format next to the old one and UDiFF, and its dates may be written `2026-10-23`, `23-Oct-2026`,
+`23-10-2026`, `23/10/2026` or `20261023`. `build bars`, `pull`, `import` and `doctor` all read
+the setting. The error for an unknown header points here.
+
 ## Files you download yourself: `import`
 
 When downloading does not work, or you have the files from elsewhere, add them to `raw/` as a
@@ -155,8 +173,9 @@ accepted: it has no ISIN column.
 
 ## What settings and import cannot fix
 
-A moved file is a settings change. A blocked source is fixed by importing. A **new file format**
-needs code: in July 2024 NSE replaced the old bhavcopy with UDiFF, which needed a new parser.
+A moved file is a settings change, and so are renamed bhavcopy columns. A blocked source is
+fixed by importing. A **new file shape** needs code: in July 2024 NSE replaced the old
+bhavcopy with UDiFF, new columns and new series codes, which needed a new parser.
 noodles reads a file's format from its header. A file in neither known format fails `build
 bars` (`not a known bhavcopy format`), and `doctor` shows `format_changed`. Nothing is parsed by
 guesswork.

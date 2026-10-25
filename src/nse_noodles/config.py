@@ -15,6 +15,10 @@ with `noodles import`. A `url` is a template with these fields (the day's for a 
     {yyyymmdd} {ddmmyyyy}      20240705, 05072024
 
 The JSON sources take no fields: the date range is sent as query parameters, as NSE's site does.
+
+When NSE renames bhavcopy columns but keeps the file's shape, `[bhavcopy_columns]` maps each
+field noodles reads to its new header (`open = "OpenPrice"`); the fields not named keep their
+UDiFF headers. A file in a new shape still needs a code change.
 """
 
 from __future__ import annotations
@@ -47,6 +51,8 @@ SOURCES: dict[str, dict[str, str]] = {
     "namechange": {"url": _ARCHIVES + "equities/namechange.csv"},
     "holidays": {"url": "https://www.nseindia.com/api/holiday-master?type=trading"},
 }
+BHAVCOPY_FIELDS = ("date", "isin", "series", "symbol", "open", "high", "low", "close",
+                   "prev_close", "volume", "traded_value")  # fmt: skip
 _MONTHS = "JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC".split()
 _SAMPLE_DAY = date(2024, 7, 5)
 
@@ -110,6 +116,7 @@ class Config:
     sources: dict[str, Source] = field(
         default_factory=lambda: {k: Source(**v) for k, v in SOURCES.items()}
     )
+    bhavcopy_columns: dict[str, str] = field(default_factory=dict)  # field -> NSE's new header
     path: Path | None = None  # the file read, None for the defaults
 
     def url(self, source: str, day: date | None = None, name: str = "", old: bool = False) -> str:
@@ -189,12 +196,22 @@ def _check_url(section: str, key: str, url: str) -> None:
         ) from None
 
 
+def _columns(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        raise ConfigError("[bhavcopy_columns] must be a table")
+    _check_keys("bhavcopy_columns", raw, set(BHAVCOPY_FIELDS))
+    for key, header in raw.items():
+        if not isinstance(header, str) or not header.strip():
+            raise ConfigError(f"[bhavcopy_columns] {key} = {header!r}: expected a column header")
+    return {k: v.strip() for k, v in raw.items()}
+
+
 def parse(text: str, path: Path | None = None) -> Config:
     try:
         raw = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"not valid TOML: {exc}") from None
-    _check_keys("top level", raw, {"network", "run", "sources"})
+    _check_keys("top level", raw, {"network", "run", "sources", "bhavcopy_columns"})
     network = _section("network", raw.get("network", {}), Network())
     _check_url("network", "home", network.home)
     run = _section("run", raw.get("run", {}), Run(), {"from": "start"})
@@ -203,7 +220,8 @@ def parse(text: str, path: Path | None = None) -> Config:
         raise ConfigError("[sources] must be a table")
     _check_keys("sources", given, set(SOURCES))
     sources = {k: _source(k, given[k], v) if k in given else v for k, v in DEFAULT.sources.items()}
-    return Config(network, run, sources, path)
+    columns = _columns(raw.get("bhavcopy_columns", {}))
+    return Config(network, run, sources, bhavcopy_columns=columns, path=path)
 
 
 def load(data: Path) -> Config:
@@ -241,4 +259,11 @@ def render(cfg: Config) -> str:
         lines += ["", f"[sources.{name}]", f"mode = {_toml(s.mode)}", f"url = {_toml(s.url)}"]
         if s.url_old:
             lines.append(f"url_old = {_toml(s.url_old)}")
+    lines += [
+        "",
+        '# Only when NSE renames UDiFF columns: field = its new header, e.g. open = "OpenPrice".',
+        f"# Fields: {', '.join(BHAVCOPY_FIELDS)}",
+        "[bhavcopy_columns]",
+        *(f"{k} = {_toml(v)}" for k, v in cfg.bhavcopy_columns.items()),
+    ]
     return "\n".join(lines) + "\n"

@@ -132,8 +132,9 @@ def pull_lists(layout: Layout, client: NseClient, cfg: Config) -> bool:
     return all(status in ("ok", "manual") for status in got.values())
 
 
-def import_files(layout: Layout, args: argparse.Namespace) -> bool:
-    r = importer.run(layout, [Path(p) for p in args.paths], args.kind, args.market, args.replace)
+def import_files(layout: Layout, args: argparse.Namespace, cfg: Config) -> bool:
+    paths = [Path(p) for p in args.paths]
+    r = importer.run(layout, paths, args.kind, args.market, args.replace, cfg.bhavcopy_columns)
     _print(
         "import",
         {
@@ -172,10 +173,12 @@ def show_config(layout: Layout, cfg: Config, action: str) -> bool:
     return True
 
 
-def build_step(layout: Layout, step: str, args: argparse.Namespace) -> bool:
+def build_step(
+    layout: Layout, step: str, args: argparse.Namespace, cfg: Config = config.DEFAULT
+) -> bool:
     curation = Path(args.curation) if args.curation else layout.root / "curation"
     if step == "bars":
-        r = bhavcopy.build(layout, rebuild=args.rebuild)
+        r = bhavcopy.build(layout, rebuild=args.rebuild, renamed=cfg.bhavcopy_columns)
         _print(
             "bars",
             {
@@ -301,7 +304,7 @@ def _pull(layout: Layout, client: NseClient, args: argparse.Namespace, cfg: Conf
 def _run(layout: Layout, client: NseClient, args: argparse.Namespace, cfg: Config) -> bool:
     """Pull everything for the range in order; the caller then builds every step."""
     args.extra_days, args.recheck, args.rebuild = [], False, False
-    ok = [pull_bhavcopy(layout, client, args, cfg), build_step(layout, "bars", args)]
+    ok = [pull_bhavcopy(layout, client, args, cfg), build_step(layout, "bars", args, cfg)]
     ok.append(pull_indices(layout, client, args, cfg))
     args.dataset = (
         ["corporate_actions", "announcements", "board_meetings"]
@@ -359,9 +362,9 @@ def run(argv: list[str]) -> int:
 
 def _dispatch(layout: Layout, args: argparse.Namespace, cfg: Config) -> bool:
     if args.cmd == "build":
-        return build_step(layout, args.step, args)
+        return build_step(layout, args.step, args, cfg)
     if args.cmd == "import":
-        return import_files(layout, args)
+        return import_files(layout, args, cfg)
     if args.cmd == "doctor":
         return check_sources(cfg, args)
     if args.cmd == "config":
@@ -371,7 +374,7 @@ def _dispatch(layout: Layout, args: argparse.Namespace, cfg: Config) -> bool:
             return _pull(layout, client, args, cfg)
         ok = _run(layout, client, args, cfg)
     for step in BUILD_STEPS:  # every step runs, even after one fails
-        ok = build_step(layout, step, args) and ok
+        ok = build_step(layout, step, args, cfg) and ok
     return ok
 
 

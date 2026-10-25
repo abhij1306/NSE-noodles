@@ -92,7 +92,10 @@ Every file and column: [outputs](docs/outputs.md).
 
 **Agent skills (optional).** Nothing here needs an AI agent. For the review work that needs
 judgement and web research, `.claude/skills/` holds skills for Claude Code (or any agent that
-reads `SKILL.md`): `research-corporate-action`, `triage-jumps` and `review-lineage`.
+reads `SKILL.md`): `research-corporate-action`, `triage-jumps` and `review-lineage`. Research
+reads filings (mostly PDFs) with `convert-documents-to-markdown`, Firecrawl's
+[anydoc](https://github.com/firecrawl/anydoc) skill (MIT), included here; it needs Node 20 or
+later and installs nothing (`npx -y @firecrawl/anydoc`).
 
 ## Development
 

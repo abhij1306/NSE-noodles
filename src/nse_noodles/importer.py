@@ -85,16 +85,16 @@ def _zip(entry: str, data: bytes) -> bytes:
     return buf.getvalue()
 
 
-def _plan_bhavcopy(layout: Layout, name: str, data: bytes) -> Planned:
+def _plan_bhavcopy(layout: Layout, name: str, data: bytes, renamed: bhavcopy.Renamed) -> Planned:
     if not zipfile.is_zipfile(io.BytesIO(data)):  # a bare CSV: zipped as NSE names it
-        day = bhavcopy.trade_day(_zip("bhavcopy.csv", data))
+        day = bhavcopy.trade_day(_zip("bhavcopy.csv", data), renamed)
         data = _zip(bhavcopy.archive_name(day).removesuffix(".zip"), data)
-    day = bhavcopy.trade_day(data)
+    day = bhavcopy.trade_day(data, renamed)
     bhavcopy.format_for(day)  # before ISINs, or between the formats: refused
     named = bhavcopy.day_of(Path(name).name)
     if named is not None and named != day:
         raise ValueError(f"named for {named} but its rows are dated {day}")
-    if not bhavcopy.parse(day, data).rows:
+    if not bhavcopy.parse(day, data, renamed).rows:
         raise ValueError(f"no valid equity row for {day}")
     return Planned(
         "bhavcopy",
@@ -157,9 +157,9 @@ def _plan_list(kind: str, layout: Layout, data: bytes) -> Planned:
     return Planned(kind, layout.lists / name, data)
 
 
-def detect(name: str, data: bytes) -> str:
+def detect(name: str, data: bytes, renamed: bhavcopy.Renamed | None = None) -> str:
     """The kind a file is, from its content (a list's name breaks a tie); ValueError if none."""
-    if bhavcopy.readable(data):
+    if bhavcopy.readable(data, renamed):
         return "bhavcopy"
     text = _text(data).lstrip()
     if text[:1] in "[{":
@@ -167,7 +167,7 @@ def detect(name: str, data: bytes) -> str:
     cells = [h.strip().strip('"') for h in text.split("\n", 1)[0].split(",")]
     header = {c.upper() for c in cells}
     try:
-        bhavcopy.columns(cells)
+        bhavcopy.columns(cells, renamed)
         return "bhavcopy"
     except ValueError:
         pass
@@ -195,9 +195,16 @@ def _detect_json(text: str) -> str:
     raise ValueError("JSON of no known NSE dataset (give --kind if it is one)")
 
 
-def plan(layout: Layout, name: str, data: bytes, kind: str, market: str) -> Planned:
+def plan(
+    layout: Layout,
+    name: str,
+    data: bytes,
+    kind: str,
+    market: str,
+    renamed: bhavcopy.Renamed | None = None,
+) -> Planned:
     planners: dict[str, Callable[[], Planned]] = {
-        "bhavcopy": lambda: _plan_bhavcopy(layout, name, data),
+        "bhavcopy": lambda: _plan_bhavcopy(layout, name, data, renamed or {}),
         "indices": lambda: _plan_indices(layout, name, data),
         **{k: (lambda k=k: _plan_json(k, layout, data, market)) for k in JSON_KINDS},
         **{k: (lambda k=k: _plan_list(k, layout, data)) for k in LIST_KINDS},
@@ -238,8 +245,16 @@ def _entries(label: str, data: bytes) -> Iterator[tuple[str, bytes]]:
 
 
 class _Importer:
-    def __init__(self, layout: Layout, kind: str | None, market: str, replace: bool) -> None:
+    def __init__(
+        self,
+        layout: Layout,
+        kind: str | None,
+        market: str,
+        replace: bool,
+        renamed: bhavcopy.Renamed,
+    ) -> None:
         self.layout, self.kind, self.market, self.replace = layout, kind, market, replace
+        self.renamed = renamed
         self.report = Report()
         self.memo = NotFoundMemo(layout.raw / "not_found.json")
         self.log: list[dict] = []
@@ -254,14 +269,14 @@ class _Importer:
 
     def one(self, label: str, data: bytes, depth: int = 0) -> None:
         try:
-            if zipfile.is_zipfile(io.BytesIO(data)) and not bhavcopy.readable(data):
+            if zipfile.is_zipfile(io.BytesIO(data)) and not bhavcopy.readable(data, self.renamed):
                 if depth >= 2:
                     raise ValueError("zip nested too deep")
                 for inner, got in _entries(label, data):
                     self.one(inner, got, depth + 1)
                 return
-            kind = self.kind or detect(label, data)
-            self.store(label, plan(self.layout, label, data, kind, self.market))
+            kind = self.kind or detect(label, data, self.renamed)
+            self.store(label, plan(self.layout, label, data, kind, self.market, self.renamed))
         except (ValueError, zipfile.BadZipFile) as exc:  # UnicodeError is a ValueError
             self.report.rejected.append(f"{label}: {exc}")
 
@@ -310,9 +325,11 @@ def run(
     kind: str | None = None,
     market: str = "equities",
     replace: bool = False,
+    renamed: bhavcopy.Renamed | None = None,
 ) -> Report:
-    """File every file under `paths` (each read as `kind`, else recognised) into `raw/`."""
-    importer = _Importer(layout, kind, market, replace)
+    """File every file under `paths` (each read as `kind`, else recognised) into `raw/`;
+    `renamed` is `[bhavcopy_columns]` from the settings."""
+    importer = _Importer(layout, kind, market, replace, renamed or {})
     try:
         for top in paths:
             for path in files(top):

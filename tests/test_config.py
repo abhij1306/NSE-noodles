@@ -40,6 +40,8 @@ mode = "manual"
         ("[network]\ninterval = 0", "expected float"),
         ("[run]\nfrom = 'soon'", "expected date"),
         ("[run\n", "not valid TOML"),
+        ("[bhavcopy_columns]\nopen_price = 'Open'", "unknown key 'open_price'"),
+        ("[bhavcopy_columns]\nopen = ''", "expected a column header"),
     ],
 )
 def test_a_mistake_in_the_file_is_named(text, message):
@@ -48,9 +50,13 @@ def test_a_mistake_in_the_file_is_named(text, message):
 
 
 def test_the_written_defaults_read_back_as_the_defaults():
-    changed = config.parse("[sources.namechange]\nmode = 'manual'\n[run]\nholidays = 'h.txt'\n")
+    changed = config.parse(
+        "[sources.namechange]\nmode = 'manual'\n[run]\nholidays = 'h.txt'\n"
+        "[bhavcopy_columns]\nopen = 'OpenPrice'\n"
+    )
     again = config.parse(config.render(changed))
     assert (again.manual("namechange"), again.run.holidays) == (True, "h.txt")
+    assert again.bhavcopy_columns == {"open": "OpenPrice"}
     assert again.sources == changed.sources
     assert again.network == changed.network
 

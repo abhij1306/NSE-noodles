@@ -37,9 +37,10 @@ FIXES = {
         "interval; or save the files from a browser and `noodles import` them."
     ),
     "format_changed": (
-        "NSE answers in a format noodles does not read yet: the parser needs a code change "
-        "(open an issue with the URL). Meanwhile `noodles import` takes files in the known "
-        "formats."
+        "NSE answers in a format noodles does not read. If only bhavcopy columns were renamed, "
+        f"name them in [bhavcopy_columns] in DATA/{FILE_NAME}; otherwise the parser needs a "
+        "code change (open an issue with the URL), and `noodles import` takes files in the "
+        "known formats meanwhile."
     ),
 }
 
@@ -63,12 +64,15 @@ def classify(got: Fetched, valid: Callable[[bytes], bool]) -> str:
     return "ok" if valid(got.data) else "format_changed"
 
 
-def _valid_bhavcopy(data: bytes) -> bool:
-    try:
-        bhavcopy.trade_day(data)
-    except ValueError:
-        return False
-    return True
+def _valid_bhavcopy(renamed: bhavcopy.Renamed) -> Callable[[bytes], bool]:
+    def valid(data: bytes) -> bool:
+        try:
+            bhavcopy.trade_day(data, renamed)
+        except ValueError:
+            return False
+        return True
+
+    return valid
 
 
 def _valid_indices(data: bytes) -> bool:
@@ -146,8 +150,9 @@ def _daily_probes(client: NseClient, cfg: Config, today: date) -> list[Probe]:
 
     probes = []
     if not cfg.manual("bhavcopy"):
-        probes.append(_daily(client, "bhavcopy", recent, bhavcopy_url, _valid_bhavcopy))
-        probes.append(_daily(client, "bhavcopy (old format)", old, bhavcopy_url, _valid_bhavcopy))
+        valid = _valid_bhavcopy(cfg.bhavcopy_columns)
+        probes.append(_daily(client, "bhavcopy", recent, bhavcopy_url, valid))
+        probes.append(_daily(client, "bhavcopy (old format)", old, bhavcopy_url, valid))
     if not cfg.manual("indices"):
         probes.append(_daily(client, "indices", recent, indices_url, _valid_indices))
     return probes

@@ -149,6 +149,22 @@ def test_another_data_folders_raw_imports_whole(tmp_path):
     assert (report.imported, report.already, report.rejected) == ({"bhavcopy": 1}, 1, [])
 
 
+def test_renamed_columns_build_once_the_settings_name_them(tmp_path, capsys):
+    data = tmp_path / "data"
+    renamed = UDIFF.replace("OpnPric", "OpenPrice").replace("TradDt", "TradeDate")
+    (tmp_path / "bhav.csv").write_text(
+        f"{renamed}\n23-10-2026,INE000A01011,EQ,ABC,10,12,9,11,10,100,1100\n"
+    )
+    assert cli.run(["--data", str(data), "import", str(tmp_path / "bhav.csv")]) == 1
+    assert "not a file noodles knows" in capsys.readouterr().out
+    data.joinpath("noodles.toml").write_text(
+        '[bhavcopy_columns]\nopen = "OpenPrice"\ndate = "TradeDate"\n'
+    )
+    assert cli.run(["--data", str(data), "import", str(tmp_path / "bhav.csv")]) == 0
+    assert cli.run(["--data", str(data), "build", "bars"]) == 0
+    assert '"days": 1, "rows": 1' in capsys.readouterr().out
+
+
 def test_cli_import_exits_1_when_a_file_is_refused(tmp_path, capsys):
     (tmp_path / "x.json").write_text('[{"unexpected": 1}]')
     code = cli.run(["--data", str(tmp_path / "data"), "import", str(tmp_path / "x.json")])
