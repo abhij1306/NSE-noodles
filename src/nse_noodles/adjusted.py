@@ -101,7 +101,9 @@ def build(layout: Layout, as_of: date | None = None) -> dict[str, int]:
     """The hindsight series (`as_of` None) or the point-in-time replay as of the close of
     `as_of`."""
     with duckdb.connect(str(layout.db), read_only=True) as con:
-        con.execute(f"CREATE TEMP VIEW bars AS SELECT * FROM read_parquet('{layout.bars_glob()}')")
+        con.execute(
+            f"CREATE TEMP VIEW bars AS SELECT * FROM read_parquet({layout.bars_glob_sql()})"
+        )
         all_versions = con.sql("SELECT * FROM factor_versions").pl()
         if as_of is None:
             actions = versions.select(all_versions, None)

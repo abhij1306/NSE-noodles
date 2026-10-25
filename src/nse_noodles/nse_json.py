@@ -5,17 +5,18 @@ symbol-change, name-change and holiday lists.
 Each month is one file, `raw/nse/<dataset>/<index>/YYYY-MM.json` (the JSON list the endpoint
 answered, concatenated over the month's request chunks), written only when every chunk of the
 month succeeded. A rerun skips months already on disk, so a pull resumes where it stopped; the
-current month is fetched again until it has ended (`--refresh-current`).
+current month is fetched again on every pull until it has ended.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from .http import NseClient
+from .http import Fetched, NseClient
 from .layout import Layout, write_bytes
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,29 @@ def _rows(payload: object) -> list | None:
     return payload if isinstance(payload, list) else None
 
 
+def _decoded(got: Fetched) -> list | None:
+    if got.status != "ok":
+        return None
+    try:
+        return _rows(json.loads(got.data.decode("utf-8", errors="replace")))
+    except ValueError:
+        return None
+
+
+def _fetch(
+    client: NseClient, endpoint: str, step: int, index: str, first: date, last: date
+) -> tuple[list, str | None]:
+    """Every row from `first` to `last` in `step`-day chunks, and the first chunk that failed."""
+    rows: list = []
+    for a, b in chunks(first, last, step):
+        params = {"index": index, "from_date": f"{a:%d-%m-%Y}", "to_date": f"{b:%d-%m-%Y}"}
+        found = _decoded(client.get(API + endpoint, params, cookies=True))
+        if found is None:
+            return rows, f"{a}..{b}"
+        rows.extend(found)
+    return rows, None
+
+
 @dataclass
 class PullReport:
     months_written: int = 0
@@ -77,7 +101,6 @@ def pull(
     end: date,
     index: str = "equities",
     *,
-    refresh_current: bool = False,
     today: date | None = None,
 ) -> PullReport:
     endpoint, step = DATASETS[dataset]
@@ -86,28 +109,14 @@ def pull(
     folder = layout.nse(dataset, index)
     for first, last in months(start, end):
         path = folder / f"{first:%Y-%m}.json"
-        whole_month = first.day == 1 and (last + timedelta(days=1)).day == 1
-        current = last >= today.replace(day=1)
-        if path.exists() and whole_month and not (current and refresh_current):
+        # whole only once it has ended: a month fetched on its last day is still being filed
+        whole_month = first.day == 1 and (last + timedelta(days=1)).day == 1 and last < today
+        if path.exists() and whole_month:
             report.months_skipped += 1
             continue
-        rows: list = []
-        ok = True
-        for a, b in chunks(first, last, step):
-            params = {"index": index, "from_date": f"{a:%d-%m-%Y}", "to_date": f"{b:%d-%m-%Y}"}
-            got = client.get(API + endpoint, params, cookies=True)
-            found = None
-            if got.status == "ok":
-                try:
-                    found = _rows(json.loads(got.data.decode("utf-8", errors="replace")))
-                except ValueError:
-                    found = None
-            if found is None:
-                ok = False
-                report.failed.append(f"{dataset}/{index} {a}..{b}")
-                break
-            rows.extend(found)
-        if not ok:
+        rows, failed = _fetch(client, endpoint, step, index, first, last)
+        if failed is not None:
+            report.failed.append(f"{dataset}/{index} {failed}")
             continue
         if not whole_month:  # a partial month is named by its range, never mistaken for a full one
             path = folder / f"{first:%Y-%m}_{first.day:02d}-{last.day:02d}.json"
@@ -117,12 +126,25 @@ def pull(
     return report
 
 
+def _list_ok(name: str, data: bytes) -> bool:
+    text = data.decode("utf-8-sig", errors="replace").lstrip()
+    if name.endswith(".json"):
+        try:
+            return isinstance(json.loads(text), dict)
+        except ValueError:
+            return False
+    header = text.split("\n", 1)[0]
+    return "," in header and not header.startswith("<")
+
+
 def pull_lists(layout: Layout, client: NseClient) -> dict[str, str]:
     """The symbol-change and name-change CSVs and this year's holiday list (NSE publishes only
     the current year's; past years come from your own list, see `coverage`)."""
     out = {}
     for name, url in LIST_URLS.items():
         got = client.get(url, cookies=url.startswith(API))
+        if got.status == "ok" and not _list_ok(name, got.data):
+            got = Fetched("error")  # a block page never replaces a good list
         if got.status == "ok":
             write_bytes(layout.lists / name, got.data)
         out[name] = got.status
@@ -135,13 +157,13 @@ def read_shards(layout: Layout, dataset: str, index: str = "equities") -> list[d
     folder = layout.nse(dataset, index)
     files = sorted(folder.glob("*.json"))
     full = {p.stem for p in files if len(p.stem) == 7}
-    seen: set[str] = set()
+    seen: set[bytes] = set()  # digests: years of rows with their attachment texts stay small
     out = []
     for path in files:
         if len(path.stem) > 7 and path.stem[:7] in full:
             continue
         for row in json.loads(path.read_text(encoding="utf-8")):
-            key = json.dumps(row, sort_keys=True)
+            key = hashlib.blake2b(json.dumps(row, sort_keys=True).encode(), digest_size=16).digest()
             if key not in seen:
                 seen.add(key)
                 out.append(row)

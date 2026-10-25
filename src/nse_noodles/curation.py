@@ -45,6 +45,8 @@ RESEARCH_COLUMNS = (
     "quote",  # short verbatim quote from the source
     "notes",
 )
+RESEARCH_TABLES = ("demerger", "rights", "bonus_instrument", "split_bonus")
+LEG_TYPES = ("", "demerger", "amalgamation", "rights", "bonus", "split", "bonus_instrument")
 CORRECTION_COLUMNS = (
     "op",
     "isin",
@@ -109,6 +111,60 @@ def _date(r: dict[str, str], key: str, where: str, required: bool = False) -> da
     return day
 
 
+def _positive(r: dict[str, str], key: str, where: str) -> Fraction | None:
+    """A research number cell: empty is None; anything unreadable or not above zero is an
+    error, never a silent fall back to NSE's terms."""
+    if not r[key]:
+        return None
+    value = number(r[key])
+    if value is None or value <= 0:
+        raise CurationError(f"{where}: bad {key} {r[key][:20]!r}")
+    return value
+
+
+def _ratio(r: dict[str, str], where: str) -> tuple[Fraction, Fraction] | None:
+    a, b = _positive(r, "ratio_a", where), _positive(r, "ratio_b", where)
+    if (a is None) != (b is None):
+        raise CurationError(f"{where}: ratio_a and ratio_b go together")
+    return None if a is None or b is None else (a, b)
+
+
+def _choice(r: dict[str, str], key: str, allowed: tuple[str, ...], where: str) -> str:
+    value = r[key].lower()
+    if value not in allowed:
+        raise CurationError(f"{where}: bad {key} {r[key][:20]!r} (one of {', '.join(allowed)})")
+    return value
+
+
+def _research_row(file: str, n: int, r: dict[str, str]) -> ResearchRow:
+    where = f"{file}:{n}"
+    return ResearchRow(
+        file,
+        n,
+        _choice(r, "table", RESEARCH_TABLES, where),
+        r["symbol"].upper(),
+        r["isin"].upper(),
+        _date(r, "ex_date", where, required=True),
+        _choice(r, "leg_type", LEG_TYPES, where),
+        r["resulting_symbol"].upper(),
+        r["resulting_isin"].upper(),
+        _ratio(r, where),
+        _positive(r, "issue_price", where),
+        r["partly_paid"].lower().startswith("y"),
+        _positive(r, "coa_parent_pct", where),
+        _positive(r, "coa_resulting_pct", where),
+        r["non_equity_consideration"],
+        _positive(r, "value_per_share_rs", where),
+        _date(r, "record_date", where),
+        r["our_data_wrong"].lower(),
+        CONFIDENCE.get(r["confidence"].lower(), 0),
+        r["source_url"],
+        _date(r, "source_date", where),
+        r["quote"],
+        r["notes"],
+    )
+
+
 def read_research(folder: Path) -> list[ResearchRow]:
     out = []
     for path in sorted(folder.glob("*.csv")) if folder.is_dir() else []:
@@ -119,35 +175,7 @@ def read_research(folder: Path) -> list[ResearchRow]:
                 raise CurationError(f"{path.name}: missing columns {sorted(missing)}")
             for n, row in enumerate(reader, start=2):
                 r = {k: (row.get(k) or "").strip()[:2000] for k in RESEARCH_COLUMNS}
-                where = f"{path.name}:{n}"
-                a, b = number(r["ratio_a"]), number(r["ratio_b"])
-                out.append(
-                    ResearchRow(
-                        path.name,
-                        n,
-                        r["table"].lower(),
-                        r["symbol"].upper(),
-                        r["isin"].upper(),
-                        _date(r, "ex_date", where, required=True),
-                        r["leg_type"].lower(),
-                        r["resulting_symbol"].upper(),
-                        r["resulting_isin"].upper(),
-                        (a, b) if a and b and a > 0 and b > 0 else None,
-                        number(r["issue_price"]),
-                        r["partly_paid"].lower().startswith("y"),
-                        number(r["coa_parent_pct"]),
-                        number(r["coa_resulting_pct"]),
-                        r["non_equity_consideration"],
-                        number(r["value_per_share_rs"]),
-                        _date(r, "record_date", where),
-                        r["our_data_wrong"].lower(),
-                        CONFIDENCE.get(r["confidence"].lower(), 0),
-                        r["source_url"],
-                        _date(r, "source_date", where),
-                        r["quote"],
-                        r["notes"],
-                    )
-                )
+                out.append(_research_row(path.name, n, r))
     return out
 
 
@@ -181,37 +209,53 @@ def read_corrections(path: Path) -> list[Correction]:
         if parts[0] == "op":
             continue
         parts += [""] * (len(CORRECTION_COLUMNS) - len(parts))
-        op, isin, ex, kind, value, new_ex, note, known = parts[:8]
-        ex_date = parse.nse_date(ex)
-        f = number(value)
-        bad = (
-            op not in CORRECTION_OPS
-            or kind not in CORRECTION_TYPES
-            or ex_date is None
-            or not parse.ISIN_RE.match(isin.upper())
-            or not note
-            or (op in ("add", "replace") and (f is None or f <= 0))
-            or (op in ("add", "replace") and kind not in ("dividend", "split") and not f < 1)  # type: ignore[operator]
-            or (op in ("add", "replace") and kind == "split" and f == 1)
-            or (op == "move" and parse.nse_date(new_ex) is None)
-            or (bool(known) and parse.nse_date(known) is None)
-        )
-        if bad:
+        found = _correction(n, parts)
+        if found is None:
             raise CurationError(f"{path.name}:{n}: bad correction line")
-        out.append(
-            Correction(
-                n,
-                op,
-                isin.upper(),
-                ex_date,  # type: ignore[arg-type]
-                kind,
-                f,
-                parse.nse_date(new_ex),
-                note,
-                parse.nse_date(known) if known else None,
-            )
-        )
+        out.append(found)
     return out
+
+
+def _value_ok(op: str, kind: str, f: Fraction | None) -> bool:
+    """An add or replace carries a positive value: any dividend, a split other than 1 (above 1
+    is a consolidation), any other factor below 1."""
+    if op not in ("add", "replace"):
+        return True
+    if f is None or f <= 0:
+        return False
+    if kind == "split":
+        return f != 1
+    return kind == "dividend" or f < 1
+
+
+def _correction(n: int, parts: list[str]) -> Correction | None:
+    """Line `n`'s cells as a Correction, or None when any cell is invalid."""
+    op, isin, ex, kind, value, new_ex, note, known = parts[:8]
+    ex_date = parse.nse_date(ex)
+    f = number(value)
+    valid = (
+        op in CORRECTION_OPS
+        and kind in CORRECTION_TYPES
+        and ex_date is not None
+        and parse.ISIN_RE.match(isin.upper())
+        and note
+        and _value_ok(op, kind, f)
+        and (op != "move" or parse.nse_date(new_ex) is not None)
+        and (not known or parse.nse_date(known) is not None)
+    )
+    if not valid:
+        return None
+    return Correction(
+        n,
+        op,
+        isin.upper(),
+        ex_date,  # type: ignore[arg-type]
+        kind,
+        f,
+        parse.nse_date(new_ex),
+        note,
+        parse.nse_date(known) if known else None,
+    )
 
 
 def read_holidays(path: Path) -> set[date]:

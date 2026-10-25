@@ -24,7 +24,7 @@ import os
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 
@@ -90,16 +90,24 @@ class Layout:
     def bars_glob(self) -> str:
         return str(self.bars / "date=*.parquet")
 
+    def bars_glob_sql(self) -> str:
+        """`bars_glob` as a SQL string literal (a quote in the data path is doubled)."""
+        return "'" + self.bars_glob().replace("'", "''") + "'"
+
     def index_glob(self) -> str:
         return str(self.index / "date=*.parquet")
+
+
+RECENT_DAYS = 5
 
 
 class NotFoundMemo:
     """Days an archive answered 404 for, per kind (`bhavcopy`, `indices`), so a resume does
     not ask again. `--recheck` forgets them."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, today: date | None = None) -> None:
         self.path = path
+        self.today = today or date.today()
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -112,6 +120,10 @@ class NotFoundMemo:
         return day in self.days.get(kind, set())
 
     def add(self, kind: str, day: date) -> None:
+        """Remember a 404, unless the day is recent: NSE posts a day's files in the evening, so
+        a 404 within `RECENT_DAYS` may be a file not yet published and is asked again."""
+        if day > self.today - timedelta(days=RECENT_DAYS):
+            return
         self.days.setdefault(kind, set()).add(day)
         self.save()
 

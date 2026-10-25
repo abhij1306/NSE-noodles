@@ -150,14 +150,17 @@ def market_factor(
 
 
 def index_move(
-    levels: dict[date, tuple[float, float]], start: date, end: date, at_open: bool
+    levels: dict[date, tuple[float | None, float | None]], start: date, end: date, at_open: bool
 ) -> Fraction | None:
     """The index's move from the close of `start` to the open (or close) of `end`, from
     {day: (open, close)}; None when either day is missing."""
     a, b = levels.get(start), levels.get(end)
-    if not a or not b or a[1] <= 0 or b[0 if at_open else 1] <= 0:
+    if not a or not b:
         return None
-    return Fraction(str(b[0 if at_open else 1])) / Fraction(str(a[1]))
+    then, now = a[1], b[0 if at_open else 1]
+    if then is None or now is None or then <= 0 or now <= 0:
+        return None
+    return Fraction(str(now)) / Fraction(str(then))
 
 
 def versions_agree(a: Fraction, b: Fraction, tol: float = DEMERGER_VERSION_TOL) -> bool:
@@ -191,7 +194,3 @@ def bonus_instrument_counts(value: Decimal, previous_close: Decimal) -> bool:
     cash distribution of its value (a total-return factor, with P&L credited as cash); below
     1% it is treated as price-neutral."""
     return previous_close > 0 and value >= BONUS_INSTRUMENT_MIN * previous_close
-
-
-def is_jump(previous_close: float, open_: float, tol: float = JUMP_TOL) -> bool:
-    return previous_close > 0 and abs(open_ - previous_close) > tol * previous_close

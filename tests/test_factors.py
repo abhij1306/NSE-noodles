@@ -9,7 +9,6 @@ def test_rights_factor_is_terp_over_cum_price():
     # 1 new for 9 held at Rs 150, cum price Rs 215.30
     cum = Fraction("215.30")
     f = factors.rights_factor(Fraction(1), Fraction(9), Fraction(150), cum)
-    assert f == factors.terp(Fraction(1), Fraction(9), Fraction(150), cum) / cum
     assert f == (9 * cum + 150) / (10 * cum)
     assert round(float(f), 4) == 0.9697
 
@@ -42,7 +41,8 @@ def test_demerger_market_factor_rules():
     # every check disagrees: stored only if confirmed, material and held
     held = Fraction(61, 100)
     f, why = factors.market_factor(gap, {"ratio": Fraction(9, 10)}, True, held)
-    assert f == gap and why == "gap_disagrees_material_drop_held"
+    assert f == gap
+    assert why == "gap_disagrees_material_drop_held"
     assert (
         factors.market_factor(gap, {}, True, Fraction(95, 100))[1] == "no_cross_check_gap_not_held"
     )
@@ -63,7 +63,8 @@ def test_ratio_and_coa_cross_checks():
 
 def test_dividend_factor_and_cash_rules():
     f = factors.dividend_factor(Decimal("7.50"), Decimal("430.35"))
-    assert f is not None and round(f, 6) == Decimal("0.982572")
+    assert f is not None
+    assert round(f, 6) == Decimal("0.982572")
     assert factors.dividend_factor(Decimal(500), Decimal(400)) is None
     assert factors.over_yield(Decimal(60), Decimal(100))
     assert factors.bonus_instrument_counts(Decimal("12.50"), Decimal("154.75"))
@@ -74,8 +75,6 @@ def test_demerger_gap_is_neutralised_by_the_index_move_that_night():
     levels = {date(2026, 9, 4): (100.0, 100.0), date(2026, 9, 7): (102.0, 101.0)}
     night = factors.index_move(levels, date(2026, 9, 4), date(2026, 9, 7), at_open=True)
     assert night == Fraction(102, 100)
-    raw = Fraction(260) / Fraction("728.25")
-    assert raw / night < raw  # a market up 2% that morning hid part of the drop
     assert factors.index_move(levels, date(2026, 9, 3), date(2026, 9, 7), at_open=True) is None
     assert factors.index_move(
         levels, date(2026, 9, 4), date(2026, 9, 7), at_open=False

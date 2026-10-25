@@ -12,35 +12,47 @@ concurrency:
 permissions:
   contents: read
 
+# Installs only locked wheels (no sdist build scripts run); tests import the package from src/.
 jobs:
   static:
     name: Format, lint, complexity
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
-      - run: uv sync --locked --extra dev
+          activate-environment: true
+      - run: uv sync --locked --no-build --no-install-project --extra dev
       - name: Format
-        run: uv run ruff format --check --diff .
+        run: ruff format --check --diff .
       - name: Lint and complexity (C901 <= 10)
-        run: uv run ruff check --output-format github .
+        run: ruff check --output-format github .
 
   test:
-    name: Tests (Python ${{ matrix.python }})
-    runs-on: ubuntu-latest
+    name: Tests (Python ${{ matrix.python }}${{ matrix.os == 'windows-latest' && ', Windows' || '' }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python: ["3.12", "3.13"]
+        # Windows has no system tz database; this catches a missing tzdata dependency.
+        include:
+          - os: windows-latest
+            python: "3.13"
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
+          activate-environment: true
           python-version: ${{ matrix.python }}
-      - run: uv sync --locked --extra dev
-      - run: uv run pytest
+      - run: uv sync --locked --no-build --no-install-project --extra dev
+      - run: pytest

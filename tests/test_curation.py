@@ -14,8 +14,9 @@ def _research(tmp_path, **cells):
 
 
 def test_bad_research_date_is_an_error_not_a_dropped_row(tmp_path):
+    folder = _research(tmp_path, ex_date="06/01/2025")
     with pytest.raises(CurationError, match="ex_date"):
-        read_research(_research(tmp_path, ex_date="06/01/2025"))
+        read_research(folder)
 
 
 def test_consolidation_correction_may_exceed_one(tmp_path):

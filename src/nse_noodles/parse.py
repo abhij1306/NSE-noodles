@@ -21,7 +21,6 @@ SPLIT, BONUS, RIGHTS, DEMERGER, OTHER, DIVIDEND = (
     "other",
     "dividend",
 )
-PRICE_TYPES = (SPLIT, BONUS, RIGHTS, DEMERGER, OTHER)
 
 _MONTHS = "jan feb mar apr may jun jul aug sep oct nov dec".split()
 _NSE_DATE = re.compile(r"(\d{1,2})-([A-Za-z]{3})-(\d{4})")
@@ -43,7 +42,10 @@ def nse_date(raw: str | None) -> date | None:
         return None
 
 
-_MONTH = r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?"
+_MONTH = (
+    r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?"
+    r"|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b\.?"
+)
 _ORDINAL = r"(\d{1,2})(?:st|nd|rd|th)?"
 _NAMED_DATES = (  # (pattern, order of day / month / year groups)
     (
@@ -64,7 +66,7 @@ def dates_named(text: str) -> set[date]:
     for pattern, order in _NAMED_DATES:
         for m in pattern.finditer(text):
             parts = dict(zip(order, m.groups(), strict=True))
-            month = parts["m"].lower()
+            month = parts["m"].lower()[:3]
             month_no = _MONTHS.index(month) + 1 if month in _MONTHS else int(month)
             try:
                 out.add(date(int(parts["y"]), month_no, int(parts["d"])))
@@ -90,18 +92,12 @@ def ordinary_equity(isin: str) -> bool:
     """An ordinary (or DVR) equity share's ISIN: `IN` + `E`/`9` + 4-char issuer + security type
     `01` + serial + check digit. ETF/fund units (`INF`), rights entitlements (type `20`) and
     debt are not. NSE's `instrument_class`-style labels are unreliable; the ISIN is not."""
-    return len(isin) == 12 and isin[:2] == "IN" and isin[2] in "E9" and isin[7:9] == "01"
-
-
-def issuer(isin: str) -> str:
-    """The issuer part of an ISIN: a reissue of the same company's shares keeps it."""
-    return isin[3:7]
+    return len(isin) == 12 and isin.startswith("IN") and isin[2] in "E9" and isin[7:9] == "01"
 
 
 # --- ratios ---------------------------------------------------------------------------------------
 
 _RATIO = re.compile(rf"^\s*{_NUMBER}\s*:\s*{_NUMBER}\s*$")
-_RATIO_IN = re.compile(rf"{_NUMBER}\s*:\s*{_NUMBER}")
 
 
 def parse_ratio(raw: str) -> tuple[Fraction, Fraction] | None:
@@ -113,13 +109,17 @@ def parse_ratio(raw: str) -> tuple[Fraction, Fraction] | None:
     return (a, b) if a > 0 and b > 0 else None
 
 
+# the char before the ratio is consumed, not looked behind: no match starts inside a number
+_BONUS_RATIO = re.compile(r"(?:^|[^\d.])(\d++)\s*+:\s*+(\d++)(?!\.\d)")
+
+
 def bonus_ratio(text: str) -> tuple[int, int] | None:
-    """The first `a:b` after the word "bonus"."""
+    """The first `a:b` of whole numbers after the word "bonus" ("1.5:1" is none)."""
     lowered = text.lower()
     at = lowered.find("bonus")
     if at < 0:
         return None
-    found = re.search(r"(\d+)\s*:\s*(\d+)", lowered[at:])
+    found = _BONUS_RATIO.search(lowered[at:])
     return (int(found[1]), int(found[2])) if found else None
 
 
@@ -135,13 +135,15 @@ def split_pair(text: str) -> tuple[Fraction, Fraction] | None:
     return None
 
 
-# A bonus of preference shares or debentures ("Bonus NCRPS 4:1", "Bonus Debentures 1:1",
-# "Bonus - 1 Debenture For 1 Equity Share Held") issues no equity: the share count stays and the
+# A bonus of preference shares, debentures, bonds or warrants ("Bonus NCRPS 4:1", "Bonus
+# Debentures 1:1", "Bonus Issue Of NCDs 1:1", "Bonus - 1 Debenture For 1 Equity Share Held")
+# issues no equity: the share count stays and the
 # price drops by about the instrument's value, as on a dividend. Read as an equity bonus it fakes
 # a several-fold jump in the adjusted history.
 _NON_EQUITY_BONUS = re.compile(
-    r"bonus\W*(?:n?c?rps|ncds?\b|deb(?:entures?)?(?![a-z])|pref)"
-    r"|bonus\b.*\b(?:debentures?|ncrps|preference)\b"
+    r"bonus\W*+(?:(?:issue|of)\W++)*+"
+    r"(?:o?c?c?rps|n?c?rps|c?cps\b|ncds?\b|deb(?:entures?)?(?![a-z])|pref|bonds?\b|warrants?\b)"
+    r"|bonus\b.*\b(?:debentures?|ncrps|ocrps|ccps|preference)\b"
 )
 
 
@@ -222,7 +224,7 @@ class RightsTerms:
 
 
 _RIGHTS_RATIO = re.compile(rf"\brights?\b(?:\s*issue)?[\s:@-]*{_NUMBER}\s*:\s*{_NUMBER}")
-_GROUPED = r"(\d{1,3}(?:,\d{2,3})+(?:\.\d+)?|\d+(?:\.\d+)?)"  # 1,000 and 1,00,000 too
+_GROUPED = r"(\d{1,3}+(?:,\d{2,3}+)++(?:\.\d++)?+|\d++(?:\.\d++)?+)"  # 1,000 and 1,00,000 too
 _PREMIUM = re.compile(rf"\b(?:premium|prem|prm)\b\s*(?:of\s*)?(?:(?:rs|re)\b\.?)?\s*{_GROUPED}")
 _AT_PAR = re.compile(r"(?:\bat|@)\s*par\b")
 _NON_SIMPLE = re.compile(r"warrant|ccps|ccd|convertible|debenture|partly|preference|\bncd")
@@ -263,14 +265,18 @@ class Payout:
     amount: Decimal
 
 
-_DIVIDEND = re.compile(r"dividend")
-_MONEY = re.compile(r"(?:\b(?:rs|re|inr)\b\.?|₹)\s*(?:[-:]\s*)?(\d+(?:\.\d+)?)")
-_PERCENT = re.compile(r"(?<![\d.])\d+(?:\.\d+)?\s*%")
+# "Dividend", or its "Div" abbreviation ("AGM/DIV-RS.2", "Int Div"), never "Sub-Div"
+DIVIDEND_WORD = re.compile(r"dividend|(?<!sub)(?<!sub-)(?<!sub )\bdiv\b", re.I)
+_DIVIDEND = DIVIDEND_WORD
+_MONEY = re.compile(rf"(?:\b(?:rs|re|inr)\b\.?|₹)\s*+(?:[-:]\s*+)?{_GROUPED}")
+_PAISE = re.compile(r"\bpaise\b|\bpaisa\b")
+_PERCENT = re.compile(r"\d\s*+%")  # only ever searched for: some number then %
 _SEP = re.compile(r"/(?!-)|\band\b|&|\+|;|,")
 _PREFERENCE = re.compile(r"preference|\bpref\b|\bc?n?c?rps\b|\bcps\b")
 _KIND = re.compile(r"\b(final|special|interim)\b")
+_LABEL = re.compile(r"\(\s*(final|special|interim)\b")
 _KIND_STOP = re.compile(r"[0-9%/]")
-_BARE = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*(?:/-\s*)?per\s*(?:equity\s*)?sh")
+_BARE = re.compile(rf"(?<![\d.,]){_GROUPED}\s*+(?:/-\s*+)?per\s*+(?:equity\s*+)?sh")
 _OTHER_PURPOSE = re.compile(
     r"split|sub-?\s*division|rights|bonus|consolidat|scheme|buy\s*-?back|face\s*val|interest"
 )
@@ -279,9 +285,21 @@ _OTHER_PURPOSE = re.compile(
 def _kind(words: str) -> str:
     if "special" in words:
         return KIND_SPECIAL
-    if "interim" in words:
+    if "interim" in words or re.search(r"\bint\b", words):
         return KIND_INTERIM
     return KIND_FINAL
+
+
+def _stated_kind(prefix: str, body: str) -> str:
+    """The kind the prefix names, else one in brackets after the amount ("Rs 2 (Interim)")."""
+    if _KIND.search(prefix):
+        return _kind(prefix)
+    label = _LABEL.search(body)
+    return _kind(label[1] if label else prefix)
+
+
+def _amount(raw: str) -> Decimal:
+    return Decimal(raw.replace(",", ""))
 
 
 def _kinded(body: str) -> list[tuple[str, str]]:
@@ -310,13 +328,13 @@ def _clause(prefix: str, body: str) -> list[Payout] | str:
         kinded = _kinded(body)
         if len(kinded) != len(amounts) or len({k for k, _ in kinded}) != len(kinded):
             return "several_amounts"
-        found = [Payout(_kind(k), Decimal(a)) for k, a in kinded]
+        found = [Payout(_kind(k), _amount(a)) for k, a in kinded]
     elif amounts:
-        found = [Payout(_kind(prefix), Decimal(amounts[0]))]
+        found = [Payout(_stated_kind(prefix, body), _amount(amounts[0]))]
     else:
         bare = _BARE.findall(body)
         if len(bare) == 1:
-            found = [Payout(_kind(prefix), Decimal(bare[0]))]
+            found = [Payout(_stated_kind(prefix, body), _amount(bare[0]))]
         elif "(" in prefix and ")" not in prefix.split("(")[-1]:
             return []  # "Rs 50/- Per Share (Special Dividend)": labels the amount before it
         else:
@@ -332,7 +350,7 @@ def _labelled(prefix: str) -> list[Payout] | str:
     found = _MONEY.findall(amount) or _BARE.findall(amount)
     if len(found) != 1:
         return "several_amounts" if found else "no_amount"
-    value = Decimal(found[0])
+    value = _amount(found[0])
     return [Payout(_kind(label), value)] if value > 0 else "no_amount"
 
 
@@ -343,27 +361,47 @@ def total(parts: tuple[Payout, ...] | list[Payout]) -> Decimal:
     return sum((p.amount for p in parts), Decimal(0))
 
 
-def payouts(text: str) -> tuple[Payout, ...] | str:  # noqa: C901
+def _dividend_clause(lowered: str, found: list[re.Match[str]], n: int) -> list[Payout] | str:
+    """The payouts of the n-th "dividend" in a purpose: its prefix runs back to the last
+    separator, its body up to the next "dividend"."""
+    match = found[n]
+    start = found[n - 1].end() if n else 0
+    stop = found[n + 1].start() if n + 1 < len(found) else len(lowered)
+    before = lowered[start : match.start()]
+    seps = list(_SEP.finditer(before))
+    prefix = before[seps[-1].end() :] if seps else before
+    parts = _clause(prefix, lowered[match.end() : stop])
+    # "Rs 50/- Per Share (Special Dividend)": the amount is in the prefix
+    return _labelled(prefix) if parts == [] else parts
+
+
+def _with_breakdown(out: list[Payout], inside: list[Payout], lowered: str) -> list[Payout] | str:
+    """Settle the amounts named outside brackets against the bracketed breakdown of them."""
+    rest = total(out) - total(inside)
+    if len(out) == 1 and rest > 0 and "includ" in lowered:
+        return [Payout(out[0].kind, rest), *inside]
+    if out and rest != 0:
+        return "breakdown_disagrees"
+    return inside
+
+
+def payouts(text: str) -> tuple[Payout, ...] | str:
     """The cash dividends a purpose names ("Interim Dividend - Rs 5 Per Share / Special
     Dividend - Rs 10 Per Share"), or why none can be trusted: `no_dividend`,
     `preference_dividend`, `percent_of_face_value`, `several_amounts`, `no_amount`,
-    `breakdown_disagrees`. One unreadable clause is enough: a partial sum is never returned."""
+    `breakdown_disagrees`. One unreadable clause is enough: a partial sum is never returned.
+    An amount in paise is `no_amount`: read as rupees it would be 100 times too large."""
     lowered = re.sub(r"\s+", " ", text.lower())
     found = list(_DIVIDEND.finditer(lowered))
     if not found:
         return "no_dividend"
+    if _PAISE.search(lowered):
+        return "no_amount"
     out: list[Payout] = []
     inside: list[Payout] = []  # named in brackets: a breakdown of the amount before them
     preference = False
     for n, match in enumerate(found):
-        start = found[n - 1].end() if n else 0
-        stop = found[n + 1].start() if n + 1 < len(found) else len(lowered)
-        before = lowered[start : match.start()]
-        seps = list(_SEP.finditer(before))
-        prefix = before[seps[-1].end() :] if seps else before
-        parts = _clause(prefix, lowered[match.end() : stop])
-        if parts == []:  # "Rs 50/- Per Share (Special Dividend)": the amount is in the prefix
-            parts = _labelled(prefix)
+        parts = _dividend_clause(lowered, found, n)
         if parts == "preference_dividend":
             preference = True
         elif isinstance(parts, str):
@@ -372,25 +410,16 @@ def payouts(text: str) -> tuple[Payout, ...] | str:  # noqa: C901
             inside.extend(parts)
         else:
             out.extend(parts)
-    if inside:
-        rest = total(out) - total(inside)
-        if len(out) == 1 and rest > 0 and "includ" in lowered:
-            out = [Payout(out[0].kind, rest), *inside]
-        elif out and rest != 0:
-            return "breakdown_disagrees"
-        else:
-            out = inside
-    if not out:
+    settled = _with_breakdown(out, inside, lowered) if inside else out
+    if isinstance(settled, str):
+        return settled
+    if not settled:
         return "preference_dividend" if preference else "no_amount"
-    return tuple(out)
+    return tuple(settled)
 
 
-def combine(subjects: list[str]) -> tuple[Payout, ...] | str:
-    """The payouts of one (ISIN, ex-date)'s feed rows. NSE keeps revisions as separate rows:
-    identical rows count once, rows naming different kinds add up, and rows giving one kind
-    different amounts are settled by the "(Purpose Revised)" rows when those agree, else
-    `rows_disagree`. A row that only names a dividend ("AGM / Dividend") is ignored; a row
-    with a figure that does not read fails the group."""
+def _read_rows(subjects: list[str]) -> tuple[dict[str, tuple[Payout, ...]], list[str]] | str:
+    """Each feed row's payouts, and the reasons of the rows that gave none."""
     read: dict[str, tuple[Payout, ...]] = {}
     failed: list[str] = []
     for subject in subjects:
@@ -401,18 +430,38 @@ def combine(subjects: list[str]) -> tuple[Payout, ...] | str:
             failed.append(found)
         else:
             read[subject] = tuple(sorted(found))
-    hard = [r for r in failed if r not in ("no_amount", "preference_dividend", "no_dividend")]
-    if hard:
-        return hard[0]
-    if not read:
-        return failed[0] if failed else "no_dividend"
+    return read, failed
+
+
+def _settle_rows(read: dict[str, tuple[Payout, ...]]) -> tuple[Payout, ...] | str:
     distinct = set(read.values())
     if len(distinct) == 1:
         return next(iter(distinct))
+    # rows add up only when each names its kind: an unnamed one defaults to final, so
+    # "Interim Rs 5" and a revised "Dividend Rs 6" would otherwise sum to 11
+    stated = all(_KIND.search(subject.lower()) for subject in read)
     kinds = [{p.kind for p in parts} for parts in distinct]
-    if all(not (a & b) for i, a in enumerate(kinds) for b in kinds[i + 1 :]):
+    if stated and all(not (a & b) for i, a in enumerate(kinds) for b in kinds[i + 1 :]):
         return tuple(sorted(p for parts in distinct for p in parts))
     revised = {parts for subject, parts in read.items() if "revised" in subject.lower()}
     if len(revised) == 1:
         return next(iter(revised))
     return "rows_disagree"
+
+
+def combine(subjects: list[str]) -> tuple[Payout, ...] | str:
+    """The payouts of one (ISIN, ex-date)'s feed rows. NSE keeps revisions as separate rows:
+    identical rows count once, rows naming different kinds add up, and rows giving one kind
+    different amounts are settled by the "(Purpose Revised)" rows when those agree, else
+    `rows_disagree`. A row that only names a dividend ("AGM / Dividend") is ignored; a row
+    with a figure that does not read fails the group."""
+    rows = _read_rows(subjects)
+    if isinstance(rows, str):
+        return rows
+    read, failed = rows
+    hard = [r for r in failed if r not in ("no_amount", "preference_dividend", "no_dividend")]
+    if hard:
+        return hard[0]
+    if not read:
+        return failed[0] if failed else "no_dividend"
+    return _settle_rows(read)
