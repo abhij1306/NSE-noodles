@@ -6,6 +6,7 @@ from fractions import Fraction
 
 import duckdb
 import polars as pl
+import pytest
 
 from nse_noodles import actions
 from nse_noodles.actions import Chains, Outcome, Proposal, apply_corrections
@@ -454,4 +455,25 @@ def test_research_about_no_feed_row_is_reviewed(tmp_path):
     assert _built(layout, "review", '"table", ex_date, hint') == [
         ("bonus_instruments", later, "r.csv:3"),
         ("splits_bonus", EX, "r.csv:2"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("last", "known_on"),
+    [
+        # another new ISIN could still start 30 sessions after the old one's last day (11 Sep):
+        # the 31st session on is 26 Oct, later than the texts read up to 30 days after 14 Sep
+        (LAST, date(2026, 10, 26)),
+        (date(2026, 10, 23), None),  # the archive does not reach that session yet
+    ],
+)
+def test_a_link_is_known_once_every_window_the_rules_read_has_passed(tmp_path, last, known_on):
+    reissue = {
+        ("INE000E01011", "EEE"): _bars("INE000E01011", {FIRST: 100.0}, FIRST, EX - timedelta(3)),
+        ("INE000F01011", "EEE"): _bars("INE000F01011", {EX: 100.0}, EX, last),
+    }
+    layout, curation = _archive(tmp_path, reissue, {})
+    assert actions.build(layout, curation, NOW)["lineage"] == {"linked:isin_reissue": 1}
+    assert _built(layout, "lineage", "old_isin, new_isin, effective, known_on") == [
+        ("INE000E01011", "INE000F01011", EX, known_on)
     ]

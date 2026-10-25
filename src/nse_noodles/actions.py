@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import math
+from bisect import bisect_right
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -1007,7 +1008,24 @@ def _read_lists(layout: Layout) -> tuple[list[lineage.SymbolChange], list[lineag
     return changes, names
 
 
-def _lineage_row(d: lineage.Decision) -> dict:
+def _link_known(effective: date, old_last: date, sessions: Sequence[date]) -> date | None:
+    """When a succession decision was knowable: once every window the rules read has passed,
+    whatever bars the data holds yet (a build stopped inside one must not date the link
+    earlier). They read the new ISIN's bars EDGE_DAYS on, restructuring and name-change texts
+    RESTRUCTURING_WINDOW on, and every other candidate (ambiguity), which may start up to
+    REVIEW_GAP_SESSIONS sessions after the old ISIN's last day. None while the archive does not
+    reach that session."""
+    later = sessions[bisect_right(sessions, old_last) :]
+    if len(later) <= lineage.REVIEW_GAP_SESSIONS:
+        return None
+    return max(
+        effective + timedelta(days=EDGE_DAYS),
+        effective + lineage.RESTRUCTURING_WINDOW,
+        later[lineage.REVIEW_GAP_SESSIONS],
+    )
+
+
+def _lineage_row(d: lineage.Decision, known_on: date | None) -> dict:
     return {
         "old_isin": d.old_isin,
         "new_isin": d.new_isin,
@@ -1015,10 +1033,7 @@ def _lineage_row(d: lineage.Decision) -> dict:
         "status": d.status,
         "reason": d.reason,
         "evidence": lineage.evidence_json(d),
-        # the link reads the new ISIN's bars up to EDGE_DAYS after its first day: known once
-        # that whole window has passed, whatever bars the data holds yet (a build stopped
-        # inside the window must not date the link earlier)
-        "known_on": d.effective + timedelta(days=EDGE_DAYS),
+        "known_on": known_on,
     }
 
 
@@ -1039,7 +1054,12 @@ def _build_lineage(
     )
     links = [(d.old_isin, d.new_isin) for d in decisions if d.status == lineage.LINKED]
     chains = Chains(all_spans, links, runs)
-    _write(con, "lineage", [_lineage_row(d) for d in decisions], LINEAGE_SCHEMA)
+    old_last = {(c.old.isin, c.new.isin): c.old.last_day for c in found}
+    rows = [
+        _lineage_row(d, _link_known(d.effective, old_last[(d.old_isin, d.new_isin)], sessions))
+        for d in decisions
+    ]
+    _write(con, "lineage", rows, LINEAGE_SCHEMA)
     _write(
         con,
         "chain_map",
