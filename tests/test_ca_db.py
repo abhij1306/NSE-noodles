@@ -178,19 +178,57 @@ def test_build_tables(tmp_path):
     ]  # fmt: skip
 
 
-def test_build_without_announcements_leaves_tables_empty(tmp_path):
+def _columns(layout: Layout, table: str) -> list[tuple[str, str]]:
+    return _rows(
+        layout,
+        "SELECT column_name, data_type FROM information_schema.columns"
+        f" WHERE table_name = '{table}' ORDER BY ordinal_position",
+    )
+
+
+def test_build_creates_every_table_even_when_empty(tmp_path):
+    """A short range with no dividends, filings or demergers still gives every table, typed,
+    so later steps can query them."""
     layout = Layout(tmp_path)
     _write(layout, "corporate_actions", "equities", [_feed("ABC", ABC, "Bonus 1:1", "20-Jun-2026")])
     counts = ca_db.build(layout)
-    assert counts["announcements"] == 0
-    assert counts["board_meetings"] == 0
+    assert counts == {
+        "ca_feed": 1,
+        "splits_bonus": 1,
+        "rights_issues": 0,
+        "demergers": 0,
+        "bonus_instruments": 0,
+        "dividends": 0,
+        "announcements": 0,
+        "board_meetings": 0,
+    }
     assert _rows(
         layout,
         "SELECT instrument_class, classification_source, announced_on FROM splits_bonus",
     ) == [("unknown", "", None)]
-    assert _rows(
-        layout, "SELECT count(*) FROM information_schema.tables WHERE table_name = 'announcements'"
-    ) == [(0,)]
+    assert _rows(layout, "SELECT count(*) FROM dividends") == [(0,)]
+    assert _columns(layout, "dividends") == [
+        ("isin", "VARCHAR"),
+        ("symbol", "VARCHAR"),
+        ("series", "VARCHAR"),
+        ("ex_date", "DATE"),
+        ("amount", "DOUBLE"),
+        ("kinds", "VARCHAR"),
+        ("status", "VARCHAR"),
+        ("subjects", "VARCHAR"),
+        ("market", "VARCHAR"),
+        ("announced_on", "DATE"),
+        ("notice_url", "VARCHAR"),
+    ]
+    assert _columns(layout, "demergers")[-3:] == [
+        ("notice_source", "VARCHAR"),
+        ("announced_on", "DATE"),
+        ("notice_url", "VARCHAR"),
+    ]
+    assert ("meeting_date", "DATE") in _columns(layout, "board_meetings")
+    assert ("announced_at", "VARCHAR") in _columns(layout, "announcements")
+    # no filing was pulled: the notice date is still a DATE column, not an untyped NULL one
+    assert ("announced_on", "DATE") in _columns(layout, "splits_bonus")
 
 
 def _bonus(subject="Bonus 1:1", ex=date(2026, 6, 20)):

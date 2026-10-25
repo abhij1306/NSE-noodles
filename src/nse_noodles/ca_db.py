@@ -68,6 +68,85 @@ NOTICE = {
 }
 
 
+_EVENT = {
+    "symbol": pl.Utf8,
+    "isin": pl.Utf8,
+    "series": pl.Utf8,
+    "ex_date": pl.Date,
+    "record_date": pl.Date,
+    "market": pl.Utf8,
+    "subject": pl.Utf8,
+}
+_NOTICE = {"announced_on": pl.Date, "notice_url": pl.Utf8}
+# Every table is created with its columns even when a range has no rows for it, so the later
+# steps can always query it.
+SCHEMAS: dict[str, dict[str, pl.DataType | type[pl.DataType]]] = {
+    "ca_feed": {
+        "symbol": pl.Utf8,
+        "company": pl.Utf8,
+        "series": pl.Utf8,
+        "isin": pl.Utf8,
+        "subject": pl.Utf8,
+        "ex_date": pl.Date,
+        "record_date": pl.Date,
+        "face_value": pl.Utf8,
+        "market": pl.Utf8,
+    },
+    "splits_bonus": {
+        **_EVENT,
+        "legs": pl.Utf8,
+        "parse_status": pl.Utf8,
+        "instrument_class": pl.Utf8,
+        "classification_source": pl.Utf8,
+        "evidence": pl.Utf8,
+        "evidence_url": pl.Utf8,
+        **_NOTICE,
+    },
+    "rights_issues": {
+        **_EVENT,
+        "face_value": pl.Utf8,
+        "ratio_new": pl.Float64,
+        "ratio_held": pl.Float64,
+        "issue_price": pl.Float64,
+        "parse_status": pl.Utf8,
+        **_NOTICE,
+    },
+    "demergers": {**_EVENT, "company": pl.Utf8, "notice_source": pl.Utf8, **_NOTICE},
+    "bonus_instruments": {**_EVENT, "face_value": pl.Utf8, **_NOTICE},
+    "dividends": {
+        "isin": pl.Utf8,
+        "symbol": pl.Utf8,
+        "series": pl.Utf8,
+        "ex_date": pl.Date,
+        "amount": pl.Float64,
+        "kinds": pl.Utf8,
+        "status": pl.Utf8,
+        "subjects": pl.Utf8,
+        "market": pl.Utf8,
+        **_NOTICE,
+    },
+    "announcements": {
+        "symbol": pl.Utf8,
+        "company": pl.Utf8,
+        "isin": pl.Utf8,
+        "announced_at": pl.Utf8,
+        "disseminated_at": pl.Utf8,
+        "category": pl.Utf8,
+        "text": pl.Utf8,
+        "file": pl.Utf8,
+    },
+    "board_meetings": {
+        "symbol": pl.Utf8,
+        "company": pl.Utf8,
+        "isin": pl.Utf8,
+        "meeting_date": pl.Date,
+        "purpose": pl.Utf8,
+        "description": pl.Utf8,
+        "intimated_at": pl.Utf8,
+    },
+}
+
+
 def _cell(value: object) -> str:
     return ("" if value is None else str(value)).strip()[:TEXT_MAX]
 
@@ -345,12 +424,11 @@ def _write_tables(layout: Layout, tables: dict[str, list[dict]]) -> dict[str, in
     layout.root.mkdir(parents=True, exist_ok=True)
     with duckdb.connect(str(layout.db)) as con:
         for name, rows in tables.items():
-            frame = pl.DataFrame(rows, infer_schema_length=None) if rows else pl.DataFrame()
+            frame = pl.DataFrame(rows, schema=SCHEMAS[name])
             con.execute(f'DROP TABLE IF EXISTS "{name}"')
-            if frame.width:
-                con.register("frame", frame)
-                con.execute(f'CREATE TABLE "{name}" AS SELECT * FROM frame')
-                con.unregister("frame")
+            con.register("frame", frame)
+            con.execute(f'CREATE TABLE "{name}" AS SELECT * FROM frame')
+            con.unregister("frame")
             counts[name] = len(rows)
     return counts
 
