@@ -3,9 +3,73 @@ from fractions import Fraction
 
 import pytest
 
-from nse_noodles.curation import Correction, CurationError, read_corrections
+from nse_noodles.curation import (
+    RESEARCH_COLUMNS,
+    Correction,
+    CurationError,
+    read_corrections,
+    read_research,
+)
 
 ISIN = "INE001A01011"
+
+
+def _research(tmp_path, **cells):
+    folder = tmp_path / "research"
+    folder.mkdir()
+    row = {k: "" for k in RESEARCH_COLUMNS} | {"table": "rights", "ex_date": "2026-06-10"}
+    row |= cells
+    lines = [",".join(RESEARCH_COLUMNS), ",".join(row[k] for k in RESEARCH_COLUMNS)]
+    (folder / "r.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return read_research(folder)
+
+
+def test_research_numbers(tmp_path):
+    (row,) = _research(
+        tmp_path,
+        table="Demerger",
+        leg_type="Amalgamation",
+        ratio_a="1",
+        ratio_b="2",
+        issue_price="1250.50",
+        coa_parent_pct="62.5",
+    )
+    assert (row.table, row.leg_type) == ("demerger", "amalgamation")
+    assert row.ratio == (Fraction(1), Fraction(2))
+    assert row.issue_price == Fraction("1250.5")
+    assert row.coa_parent == Fraction(125, 2)
+    assert (row.coa_resulting, row.value_per_share) == (None, None)
+
+
+@pytest.mark.parametrize(
+    ("cells", "message"),
+    [
+        ({"issue_price": "Rs 12.5"}, "issue_price"),
+        ({"ratio_a": "2:1", "ratio_b": "1"}, "ratio_a"),
+        ({"ratio_a": "1", "ratio_b": "-5"}, "ratio_b"),
+        ({"coa_parent_pct": "0"}, "coa_parent_pct"),
+        ({"coa_resulting_pct": "abc"}, "coa_resulting_pct"),
+        ({"value_per_share_rs": "-1"}, "value_per_share_rs"),
+        ({"ratio_a": "1"}, "ratio_a and ratio_b"),
+        ({"ratio_b": "3"}, "ratio_a and ratio_b"),
+    ],
+)
+def test_research_bad_number_is_an_error_not_a_fallback(tmp_path, cells, message):
+    with pytest.raises(CurationError, match=rf"r\.csv:2: .*{message}"):
+        _research(tmp_path, **cells)
+
+
+@pytest.mark.parametrize(
+    ("cells", "message"),
+    [
+        ({"table": "demergers"}, "table"),
+        ({"table": ""}, "table"),
+        ({"leg_type": "right"}, "leg_type"),
+    ],
+)
+def test_research_unknown_table_or_leg_type_is_an_error(tmp_path, cells, message):
+    with pytest.raises(CurationError, match=rf"r\.csv:2: .*{message}"):
+        _research(tmp_path, **cells)
 
 
 def _read(tmp_path, *lines):

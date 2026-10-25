@@ -45,6 +45,8 @@ RESEARCH_COLUMNS = (
     "quote",  # short verbatim quote from the source
     "notes",
 )
+RESEARCH_TABLES = ("demerger", "rights", "bonus_instrument", "split_bonus")
+LEG_TYPES = ("", "demerger", "amalgamation", "rights", "bonus", "split", "bonus_instrument")
 CORRECTION_COLUMNS = (
     "op",
     "isin",
@@ -109,6 +111,60 @@ def _date(r: dict[str, str], key: str, where: str, required: bool = False) -> da
     return day
 
 
+def _positive(r: dict[str, str], key: str, where: str) -> Fraction | None:
+    """A research number cell: empty is None; anything unreadable or not above zero is an
+    error, never a silent fall back to NSE's terms."""
+    if not r[key]:
+        return None
+    value = number(r[key])
+    if value is None or value <= 0:
+        raise CurationError(f"{where}: bad {key} {r[key][:20]!r}")
+    return value
+
+
+def _ratio(r: dict[str, str], where: str) -> tuple[Fraction, Fraction] | None:
+    a, b = _positive(r, "ratio_a", where), _positive(r, "ratio_b", where)
+    if (a is None) != (b is None):
+        raise CurationError(f"{where}: ratio_a and ratio_b go together")
+    return None if a is None or b is None else (a, b)
+
+
+def _choice(r: dict[str, str], key: str, allowed: tuple[str, ...], where: str) -> str:
+    value = r[key].lower()
+    if value not in allowed:
+        raise CurationError(f"{where}: bad {key} {r[key][:20]!r} (one of {', '.join(allowed)})")
+    return value
+
+
+def _research_row(file: str, n: int, r: dict[str, str]) -> ResearchRow:
+    where = f"{file}:{n}"
+    return ResearchRow(
+        file,
+        n,
+        _choice(r, "table", RESEARCH_TABLES, where),
+        r["symbol"].upper(),
+        r["isin"].upper(),
+        _date(r, "ex_date", where, required=True),
+        _choice(r, "leg_type", LEG_TYPES, where),
+        r["resulting_symbol"].upper(),
+        r["resulting_isin"].upper(),
+        _ratio(r, where),
+        _positive(r, "issue_price", where),
+        r["partly_paid"].lower().startswith("y"),
+        _positive(r, "coa_parent_pct", where),
+        _positive(r, "coa_resulting_pct", where),
+        r["non_equity_consideration"],
+        _positive(r, "value_per_share_rs", where),
+        _date(r, "record_date", where),
+        r["our_data_wrong"].lower(),
+        CONFIDENCE.get(r["confidence"].lower(), 0),
+        r["source_url"],
+        _date(r, "source_date", where),
+        r["quote"],
+        r["notes"],
+    )
+
+
 def read_research(folder: Path) -> list[ResearchRow]:
     out = []
     for path in sorted(folder.glob("*.csv")) if folder.is_dir() else []:
@@ -119,35 +175,7 @@ def read_research(folder: Path) -> list[ResearchRow]:
                 raise CurationError(f"{path.name}: missing columns {sorted(missing)}")
             for n, row in enumerate(reader, start=2):
                 r = {k: (row.get(k) or "").strip()[:2000] for k in RESEARCH_COLUMNS}
-                where = f"{path.name}:{n}"
-                a, b = number(r["ratio_a"]), number(r["ratio_b"])
-                out.append(
-                    ResearchRow(
-                        path.name,
-                        n,
-                        r["table"].lower(),
-                        r["symbol"].upper(),
-                        r["isin"].upper(),
-                        _date(r, "ex_date", where, required=True),
-                        r["leg_type"].lower(),
-                        r["resulting_symbol"].upper(),
-                        r["resulting_isin"].upper(),
-                        (a, b) if a and b and a > 0 and b > 0 else None,
-                        number(r["issue_price"]),
-                        r["partly_paid"].lower().startswith("y"),
-                        number(r["coa_parent_pct"]),
-                        number(r["coa_resulting_pct"]),
-                        r["non_equity_consideration"],
-                        number(r["value_per_share_rs"]),
-                        _date(r, "record_date", where),
-                        r["our_data_wrong"].lower(),
-                        CONFIDENCE.get(r["confidence"].lower(), 0),
-                        r["source_url"],
-                        _date(r, "source_date", where),
-                        r["quote"],
-                        r["notes"],
-                    )
-                )
+                out.append(_research_row(path.name, n, r))
     return out
 
 
