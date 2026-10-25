@@ -124,3 +124,18 @@ the market.
 - `ordinary_equity` separates ordinary shares from ETFs/funds (`INF…`), rights entitlements and
   other instruments.
 - Join histories by `chain_isin`, never by symbol.
+
+## Checklist for backtest code
+
+- Does any decision read `hindsight_daily.parquet`? It must read the replay as of that day.
+- Were the replays rebuilt after the last curation change (a replay keeps the versions of the
+  build that wrote it)?
+- Is the universe built from current symbols, or joined by symbol? It must come from the replay
+  as of each day, joined by `chain_isin`.
+- Are `tr_close` and dividend cash both used for P&L? That counts dividends twice.
+- Are absolute rupee rules (minimum price, tick size, circuit levels) applied to adjusted
+  prices? They read the raw `close` / `open` of that date.
+- Do demerger ex-dates produce large losses on raw prices, or are held positions exited per the
+  exit calendar?
+- In a study on hindsight, are `factor_pending` bars ignored? They hide a gap a trader would have
+  seen.

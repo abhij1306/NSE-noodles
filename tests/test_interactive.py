@@ -27,7 +27,7 @@ def _session(answers):
 
 def test_run_everything_with_defaults_on_an_empty_directory(tmp_path):
     root = str(tmp_path / "data")
-    code, said, ran = _session([root, "", "", "", "", "", "6"])
+    code, said, ran = _session([root, "", "", "", "", "", "8"])
     assert code == 0
     assert "  empty: start with 'Run everything for a date range'" in said
     assert ran == [["--data", root, "run", "--from", "2026-09-23", "--to", "2026-10-23"]]
@@ -48,10 +48,18 @@ def test_pull_nse_for_both_markets_and_a_typo_retried(tmp_path):
     ]  # fmt: skip
 
 
+def test_import_asks_again_for_a_missing_path(tmp_path):
+    root = str(tmp_path / "data")
+    code, said, ran = _session([root, "5", str(tmp_path / "nope"), str(tmp_path), "y", "", "8"])
+    assert code == 0
+    assert "  No such file or folder (q goes back)." in said
+    assert ran == [["--data", root, "import", str(tmp_path.resolve()), "--replace"]]
+
+
 def test_replay_defaults_to_the_last_bar_day_and_q_cancels(tmp_path):
     layout = Layout(tmp_path / "data")
     write_bytes(layout.bars / "date=2026-10-20.parquet", b"")
-    code, said, ran = _session([str(layout.root), "4", "q", "4", "", "", "6"])
+    code, said, ran = _session([str(layout.root), "4", "q", "4", "", "", "8"])
     assert code == 0
     assert "As of the close of (YYYY-MM-DD) [2026-10-20]: " in said
     assert ran == [["--data", str(layout.root), "build", "replay", "--as-of", "2026-10-20"]]
@@ -61,7 +69,7 @@ def test_replay_defaults_to_the_last_bar_day_and_q_cancels(tmp_path):
 def test_a_data_directory_inside_a_git_repository_is_refused(tmp_path):
     (tmp_path / "repo" / ".git").mkdir(parents=True)
     inside, outside = str(tmp_path / "repo" / "data"), str(tmp_path / "data")
-    _, said, _ = _session([inside, outside, "6"])
+    _, said, _ = _session([inside, outside, "8"])
     assert "  That is inside a git repository; data must never be committed. Pick another." in said
 
 
@@ -71,7 +79,7 @@ def test_the_menu_runs_through_the_cli_and_reports_its_exit_code(tmp_path, monke
         archive.writestr("cm06MAR2012bhav.csv", "SYMBOL,SERIES\n")
     layout = Layout(tmp_path / "data")
     write_bytes(layout.bhavcopy / bhavcopy.archive_name(date(2012, 3, 6)), buf.getvalue())
-    answers = iter([str(layout.root), "3", "1", "", "6"])
+    answers = iter([str(layout.root), "3", "1", "", "8"])
     said = []
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
     monkeypatch.setattr("builtins.print", lambda *a, **k: said.append(" ".join(map(str, a))))

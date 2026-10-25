@@ -12,10 +12,12 @@ Order of work:
 3. Demergers. The ex-date version is the MARKET gap (ex open / previous close, divided by any
    factor accepted on the same day) divided by the NIFTY 500's move over the same night
    (`factors.NEUTRAL_INDEX`), accepted by `factors.market_factor`; the raw gap is kept beside
-   it. Once every resulting company has a first close, the research ratio priced there
-   (`factors.ratio_factor`, the child's close brought back to the ex-date by the index) is a
-   second version, `disputed` and a review case when it is more than DEMERGER_VERSION_TOL from
-   the first. Each demerger version records its band (`factors.band`).
+   it. A demerger only research names (not in NSE's feed) has no confirmed ex-date, so a held
+   drop alone never accepts it: a cross-check must agree, else it is reviewed. Once every
+   resulting company has a first close, the research ratio priced there (`factors.ratio_factor`,
+   the child's close brought back to the ex-date by the index) is a second version, `disputed`
+   and a review case when it is more than DEMERGER_VERSION_TOL from the first. Each demerger
+   version records its band (`factors.band`).
 4. Cash: dividends (total-return factor 1 - D / previous raw close; P&L gets raw prices plus
    cash) and bonuses of debentures / preference shares worth >= 1% of the price.
 5. The reviewed correction list, last: each line ADDS a version (a deletion is a version of
@@ -663,11 +665,12 @@ def _gap_known(
     checks: dict[str, Fraction],
     check_known: dict[str, Known],
     settle: tuple[Bar, Fraction] | None,
+    date_confirmed: bool,
 ) -> Known:
     """Usable as soon as the first route that accepts it was knowable: an agreeing check, or
     the gap holding SETTLE_SESSIONS on."""
     routes = [check_known[k] for k, v in checks.items() if factors.agrees(gap, v)]
-    if settle and factors.market_factor(gap, {}, True, settle[1])[0] is not None:
+    if settle and factors.market_factor(gap, {}, date_confirmed, settle[1])[0] is not None:
         routes.append((at_close(settle[0].day), "settled_close"))
     dated = [r for r in routes if r[0] is not None]
     return min(dated) if dated else routes[0]  # type: ignore[type-var]
@@ -704,12 +707,14 @@ def decide_demerger(
     bar = _settle_bar(series, night.on)
     settle = (bar, night.held(bar)) if bar is not None else None
     settled = settle[1] if settle else None
-    factor, why = factors.market_factor(night.gap, checks, True, settled)
+    # only NSE's feed confirms the ex-date: a research-only demerger needs an agreeing check
+    confirmed = p.source != "research"
+    factor, why = factors.market_factor(night.gap, checks, confirmed, settled)
     evidence = _demerger_evidence(night, settled, checks, note)
     if factor is None:
         out.review.append(_row(p, why if p.research else f"needs_research:{why}", evidence))
         return []
-    known = _gap_known(night.gap, checks, check_known, settle)
+    known = _gap_known(night.gap, checks, check_known, settle, confirmed)
     researched = known[1] in ("research_source_date", "resulting_first_close")
     basis = "index_neutral_gap" if night.overnight else "raw_gap"
     band = factors.band([night.raw, night.gap])

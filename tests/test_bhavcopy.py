@@ -46,6 +46,15 @@ def test_parse_keeps_one_valid_row_per_isin():
     assert parsed.other_series == 2
 
 
+def test_a_header_in_no_known_format_fails_and_says_how_to_map_it():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as archive:
+        archive.writestr("x.csv", "Symbol,Close\nABC,10\n")
+    data = buf.getvalue()
+    with pytest.raises(ValueError, match=r"name them in \[bhavcopy_columns\]"):
+        bhavcopy.parse(DAY, data)
+
+
 def test_parse_needs_exactly_one_csv():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as archive:

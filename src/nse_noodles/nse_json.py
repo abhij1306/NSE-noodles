@@ -16,23 +16,27 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
+from .config import DEFAULT, Config
 from .http import Fetched, NseClient
 from .layout import Layout, write_bytes
 
 logger = logging.getLogger(__name__)
 
-API = "https://www.nseindia.com/api/"
-DATASETS = {
-    # dataset: (endpoint, days per request inside a month)
-    "corporate_actions": ("corporates-corporateActions", 31),
-    "announcements": ("corporate-announcements", 7),  # busy: weekly requests
-    "board_meetings": ("corporate-board-meetings", 31),
+DATASETS = {  # dataset: days per request inside a month (its URL is in `config.SOURCES`)
+    "corporate_actions": 31,
+    "announcements": 7,  # busy: weekly requests
+    "board_meetings": 31,
+}
+ROW_KEYS = {  # keys every row of a dataset's answer carries (the ones the build reads first)
+    "corporate_actions": {"symbol", "subject", "exDate"},
+    "announcements": {"symbol", "an_dt"},
+    "board_meetings": {"bm_symbol", "bm_date"},
 }
 INDEXES = ("equities", "sme")
-LIST_URLS = {
-    "symbolchange.csv": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
-    "namechange.csv": "https://nsearchives.nseindia.com/content/equities/namechange.csv",
-    "holidays.json": API + "holiday-master?type=trading",
+LISTS = {  # file in raw/lists: (source, needs NSE's cookies)
+    "symbolchange.csv": ("symbolchange", False),
+    "namechange.csv": ("namechange", False),
+    "holidays.json": ("holidays", True),
 }
 
 
@@ -56,7 +60,8 @@ def chunks(first: date, last: date, days: int) -> list[tuple[date, date]]:
     return out
 
 
-def _rows(payload: object) -> list | None:
+def rows(payload: object) -> list | None:
+    """The rows of an answer: a list, or the `data` list of an object."""
     if isinstance(payload, dict):
         payload = payload.get("data")
     return payload if isinstance(payload, list) else None
@@ -66,19 +71,19 @@ def _decoded(got: Fetched) -> list | None:
     if got.status != "ok":
         return None
     try:
-        return _rows(json.loads(got.data.decode("utf-8", errors="replace")))
+        return rows(json.loads(got.data.decode("utf-8", errors="replace")))
     except ValueError:
         return None
 
 
 def _fetch(
-    client: NseClient, endpoint: str, step: int, index: str, first: date, last: date
+    client: NseClient, url: str, step: int, index: str, first: date, last: date
 ) -> tuple[list, str | None]:
     """Every row from `first` to `last` in `step`-day chunks, and the first chunk that failed."""
     rows: list = []
     for a, b in chunks(first, last, step):
         params = {"index": index, "from_date": f"{a:%d-%m-%Y}", "to_date": f"{b:%d-%m-%Y}"}
-        found = _decoded(client.get(API + endpoint, params, cookies=True))
+        found = _decoded(client.get(url, params, cookies=True))
         if found is None:
             return rows, f"{a}..{b}"
         rows.extend(found)
@@ -102,8 +107,9 @@ def pull(
     index: str = "equities",
     *,
     today: date | None = None,
+    cfg: Config = DEFAULT,
 ) -> PullReport:
-    endpoint, step = DATASETS[dataset]
+    url, step = cfg.url(dataset), DATASETS[dataset]
     today = today or date.today()
     report = PullReport()
     folder = layout.nse(dataset, index)
@@ -114,7 +120,7 @@ def pull(
         if path.exists() and whole_month:
             report.months_skipped += 1
             continue
-        rows, failed = _fetch(client, endpoint, step, index, first, last)
+        rows, failed = _fetch(client, url, step, index, first, last)
         if failed is not None:
             report.failed.append(f"{dataset}/{index} {failed}")
             continue
@@ -126,7 +132,7 @@ def pull(
     return report
 
 
-def _list_ok(name: str, data: bytes) -> bool:
+def list_ok(name: str, data: bytes) -> bool:
     text = data.decode("utf-8-sig", errors="replace").lstrip()
     if name.endswith(".json"):
         try:
@@ -137,13 +143,17 @@ def _list_ok(name: str, data: bytes) -> bool:
     return "," in header and not header.startswith("<")
 
 
-def pull_lists(layout: Layout, client: NseClient) -> dict[str, str]:
+def pull_lists(layout: Layout, client: NseClient, cfg: Config = DEFAULT) -> dict[str, str]:
     """The symbol-change and name-change CSVs and this year's holiday list (NSE publishes only
-    the current year's; past years come from your own list, see `coverage`)."""
+    the current year's; past years come from your own list, see `coverage`). A list whose
+    source is `manual` is left alone."""
     out = {}
-    for name, url in LIST_URLS.items():
-        got = client.get(url, cookies=url.startswith(API))
-        if got.status == "ok" and not _list_ok(name, got.data):
+    for name, (source, cookies) in LISTS.items():
+        if cfg.manual(source):
+            out[name] = "manual"
+            continue
+        got = client.get(cfg.url(source), cookies=cookies)
+        if got.status == "ok" and not list_ok(name, got.data):
             got = Fetched("error")  # a block page never replaces a good list
         if got.status == "ok":
             write_bytes(layout.lists / name, got.data)

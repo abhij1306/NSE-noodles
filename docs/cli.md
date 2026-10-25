@@ -4,7 +4,7 @@ The command is `noodles`. Run it as `uv run noodles ...` from the repository, or
 `noodles` with the project's virtual environment activated ([getting started](getting-started.md)).
 
 ```text
-noodles [--data DIR] [--interval SECONDS] [-v] {pull,build,run} ...
+noodles [--data DIR] [--interval SECONDS] [-v] {pull,build,run,import,doctor,config} ...
 noodles                          (no arguments: the guided menu)
 ```
 
@@ -15,9 +15,12 @@ These go **before** the subcommand: `noodles --data D pull bhavcopy`, not
 
 | Option | Meaning |
 |---|---|
-| `--data DIR` | Required. The data directory. Keep it outside any git repository. `~` is expanded and the directory is created if needed |
-| `--interval SECONDS` | Seconds between two requests to NSE. Default 2. Do not go lower |
+| `--data DIR` | The data directory; default `$NOODLES_DATA`, required when that is not set. Keep it outside any git repository. `~` is expanded and the directory is created if needed |
+| `--interval SECONDS` | Seconds between two requests to NSE. Default 2, or `[network] interval` in `noodles.toml`. Do not go lower |
 | `-v`, `--verbose` | Log each retry and warning |
+
+Settings that stay with a data folder (source URLs, which sources are downloaded, the pace,
+`run`'s defaults) go in `DATA/noodles.toml`: see [maintaining](maintaining.md#settings-noodlestoml).
 
 ## The guided menu
 
@@ -28,8 +31,10 @@ days, index days, NSE month files, lists, database, outputs, review rows), and o
 2. Pull one source (`pull ...`)
 3. Build one step (`build ...`)
 4. Point-in-time replay as of a day (`build replay --as-of`)
-5. Show what the data directory holds
-6. Quit
+5. Import files you downloaded yourself (`import`)
+6. Check that NSE's sources still work (`doctor`)
+7. Show what the data directory holds
+8. Quit
 
 It asks only for what the command needs, each answer with a default in brackets (Enter takes
 it). It then prints the equivalent command line and asks before running it. Type `q` at any
@@ -50,8 +55,9 @@ skipped. Never run two pulls at once.
 | `pull nse` | `--from`, `--to`, `--dataset NAME [NAME ...]`, `--index equities\|sme [...]` | NSE JSON feeds, month by month. `--dataset`: `corporate_actions` (default), `announcements` (fetched a week at a time, slow), `board_meetings`. `--index`: `equities` (default), `sme` |
 | `pull lists` | none | `symbolchange.csv`, `namechange.csv` and the current year's `holidays.json`. A reply that is not a CSV or JSON (a block page) never replaces a good file |
 
-`--from` defaults to 2011-06-22 (the first bhavcopy with ISINs) and `--to` to today. Dates are
-`YYYY-MM-DD`.
+`--from` defaults to `[run] from` in `noodles.toml`, else 2011-06-22 (the first bhavcopy with
+ISINs), and `--to` to today. Dates are `YYYY-MM-DD`. A source with `mode = "manual"` is not
+pulled: its line says so, and its files come from `import`.
 
 `pull nse` skips a month only when its file exists and the month had ended when it was fetched.
 A month still in progress, or a range that starts or ends inside a month, is saved as
@@ -59,8 +65,10 @@ A month still in progress, or a range that starts or ends inside a month, is sav
 one when the feed is read.
 
 Requests: every request sends a browser User-Agent and Referer, and before the website JSON
-endpoints (`pull nse`, the holiday list) the client loads NSE's home page for cookies. It waits `--interval` seconds between requests and tries each one 5 times, backing off
-(2 s, 4 s, ...) and starting a fresh session after the second failure.
+endpoints (`pull nse`, the holiday list) the client loads NSE's home page for cookies. It waits
+`--interval` seconds between requests and tries each one 5 times, backing off (2 s, 4 s, ...)
+and starting a fresh session after the second failure. Each source's URL, the User-Agent, the
+tries and the timeout are settings ([maintaining](maintaining.md#settings-noodlestoml)).
 
 ## build
 
@@ -100,7 +108,29 @@ every replay you use (a replay file keeps the versions of the build that wrote i
 6. `build bars`, `ca-db`, `actions`, `hindsight`, `reports`
 
 It never builds a replay: run `build replay --as-of D` afterwards. The builds run even when a
-pull failed, so you get the counts. The exit code still reports the failure.
+pull failed, so you get the counts. The exit code still reports the failure. Without flags,
+`--from`, `--curation`, `--holidays` and `--with-announcements` come from `[run]` in
+`noodles.toml`. Rerunning `run` is how the data is kept up to date
+([maintaining](maintaining.md#update-on-a-schedule)).
+
+## import
+
+`noodles --data D import PATH [PATH ...] [--kind KIND] [--market equities|sme] [--replace]`.
+Files you downloaded yourself (bhavcopies, index files, NSE's JSON feeds, the lists), folders of
+them, or zips of them, filed under `raw/` as a pull would file them. Each is recognised by its
+content. A day already on disk with other bytes is refused unless `--replace`. Details:
+[maintaining](maintaining.md#files-you-download-yourself-import).
+
+## doctor
+
+`noodles --data D doctor` asks each source in `download` mode once and prints one line per
+source: `ok`, `not_found` (moved), `blocked`, `format_changed` or `manual`, then what to do about
+each problem. Details: [maintaining](maintaining.md#when-a-pull-fails-doctor).
+
+## config
+
+`noodles --data D config init` writes `DATA/noodles.toml` with every default (never over an
+existing file). `noodles --data D config show` prints the settings in effect.
 
 ## Exit codes
 
@@ -108,8 +138,9 @@ pull failed, so you get the counts. The exit code still reports the failure.
 |---|---|
 | 0 | Everything finished |
 | 1 | A pull reported `errors` or `failed` months, a list was not `ok`, or `build bars` reported `failed` files (for `run`, any of these). The printed counts say which |
+| 1 | `import` refused a file or found a conflict; `doctor` found a source that is not `ok` |
 | 1 | A step stopped with an error (a Python traceback), e.g. a bad curation line, which names its file and line. Also `build replay` without `--as-of` |
-| 2 | The command line could not be parsed (unknown option, `--data` missing or placed after the subcommand) |
+| 2 | The command line could not be parsed (unknown option, `--data` missing or placed after the subcommand), or `noodles.toml` has a mistake (the message names it) |
 
 The menu ends with the exit code of the last command it ran (0 if none, or when input ends).
 Ctrl-C in the menu exits with 130.
@@ -123,7 +154,8 @@ Each step prints one line, `title: {json}`.
 | `bhavcopy` | `downloaded, already, not_found, skipped_known_404, errors` (dates to retry) |
 | `indices` | `downloaded, already, not_found, errors` |
 | `<dataset>/<index>` | `months_written, months_skipped, rows, failed` (date ranges to retry) |
-| `lists` | each file → `ok`, `not_found` or `error` |
+| `lists` | each file → `ok`, `not_found`, `error` or `manual` |
+| `import` | `imported` (by kind), `already`, `replaced`, `conflicts`, `rejected` (each with its reason) |
 | `bars` | `days, rows, already, invalid_rows, wrong_date_rows, failed` (a zip with no valid row fails) |
 | `index` | `days` parsed |
 | `ca-db` | rows per table |

@@ -137,9 +137,10 @@ flowchart TD
       gap is at most 0.9 (a drop of at least 10%) and the **settled close** agrees with it. The
       settled close is the close of the fifth session counting the ex-date as the first,
       divided by the NIFTY 500's move from the previous session's close to that close (raw when
-      an index day is missing) and by any same-session factor. Every demerger ex-date is
-      currently treated as confirmed, so the `*_date_unconfirmed` reasons in the code do not
-      occur.
+      an index day is missing) and by any same-session factor. That second route needs an
+      ex-date NSE's feed confirms: a demerger only research names is accepted only when a
+      cross-check agrees, else it is a review case (`no_cross_check_date_unconfirmed`,
+      `gap_disagrees_date_unconfirmed`).
     - **Ratio version** (`basis resulting_ratio`): once every resulting company has traded, the
       ratio-priced value is a second version, available from that first close. More than 10%
       from the ex-date version in log terms (|ln(ratio/gap)| > ln 1.1), it is `disputed`, never

@@ -217,11 +217,31 @@ def plan_replay(ask: Ask, say: Say, st: Status, today: date) -> list[str]:
     return ["build", "replay", "--as-of", as_of.isoformat()]
 
 
+def plan_import(ask: Ask, say: Say, st: Status, today: date) -> list[str]:
+    say("  Bhavcopies, index files, NSE's JSON or lists: each is recognised by its content.")
+    while True:
+        raw = _answer(ask, "File or folder to import: ")
+        if raw and Path(raw).expanduser().exists():
+            break
+        say("  No such file or folder (q goes back).")
+    argv = ["import", str(Path(raw).expanduser().resolve())]
+    if ask_yes(ask, "Replace days already on disk with these files?", False):
+        argv.append("--replace")
+    return argv
+
+
+def plan_doctor(ask: Ask, say: Say, st: Status, today: date) -> list[str]:
+    say("  Asks each NSE source once (about a dozen requests) and says what is broken.")
+    return ["doctor"]
+
+
 MENU: tuple[tuple[str, Callable[[Ask, Say, Status, date], list[str]] | None], ...] = (
     ("Run everything for a date range", plan_run),
     ("Pull one source", plan_pull),
     ("Build one step", plan_build),
     ("Point-in-time replay as of a day", plan_replay),
+    ("Import files you downloaded yourself", plan_import),
+    ("Check that NSE's sources still work", plan_doctor),
     ("Show what the data directory holds", None),
     ("Quit", None),
 )
