@@ -178,6 +178,26 @@ def test_build_tables(tmp_path):
     ]  # fmt: skip
 
 
+def test_dividends_group_by_isin_symbol_and_ex_date(tmp_path):
+    layout = Layout(tmp_path)
+    rows = [
+        _feed("ABC", ABC, "Interim Dividend - Rs 2 Per Share", "15-Jun-2026"),
+        _feed("ABC", ABC, "Final Dividend - Rs 3 Per Share", "15-Jun-2026"),
+        _feed("ABC", ABC, "Final Dividend - Rs 3 Per Share", "15-Jun-2026"),  # repeated row
+        _feed("ABC", ABC, "Interim Dividend - Rs 4 Per Share", "15-Sep-2026"),
+        _feed("ABCNEW", ABC, "Dividend - Rs 1 Per Share", "15-Jun-2026"),  # same ISIN, new symbol
+    ]
+    _write(layout, "corporate_actions", "equities", rows)
+    ca_db.build(layout)
+    assert _rows(
+        layout, "SELECT symbol, ex_date, amount, kinds, status FROM dividends ORDER BY ALL"
+    ) == [
+        ("ABC", date(2026, 6, 15), 5.0, "final 3+interim 2", "ok"),  # repeat counted once
+        ("ABC", date(2026, 9, 15), 4.0, "interim 4", "ok"),
+        ("ABCNEW", date(2026, 6, 15), 1.0, "final 1", "ok"),
+    ]
+
+
 def _columns(layout: Layout, table: str) -> list[tuple[str, str]]:
     return _rows(
         layout,

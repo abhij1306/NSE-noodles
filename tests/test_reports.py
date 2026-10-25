@@ -1,10 +1,55 @@
 import json
 from datetime import date, datetime
 
+import duckdb
 import polars as pl
 
 from nse_noodles import reports
 from nse_noodles.layout import Layout
+
+EQUITY, ENTITLEMENT = "INE001A01011", "INE001A20011"
+
+
+def _day(d, chain, isin, o, c):
+    return {
+        "chain_isin": chain,
+        "isin": isin,
+        "symbol": "AAA",
+        "date": date(2024, 6, d),
+        "adj_open": float(o),
+        "adj_close": float(c),
+        "ordinary_equity": isin == EQUITY,
+    }
+
+
+def test_jumps(tmp_path):
+    layout = Layout(tmp_path)
+    layout.out.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            _day(3, EQUITY, EQUITY, 100, 100),
+            _day(4, EQUITY, EQUITY, 125, 100),  # exactly 25%: not a jump
+            _day(5, EQUITY, EQUITY, 126, 200),  # beyond 25%
+            _day(25, EQUITY, EQUITY, 400, 200),  # 20 days on: a relisting, not a jump
+            _day(26, EQUITY, EQUITY, 140, 140),  # down 30%
+            # another chain: its first day is never compared with EQUITY's last
+            _day(3, ENTITLEMENT, ENTITLEMENT, 10, 10),
+            _day(4, ENTITLEMENT, ENTITLEMENT, 5, 5),
+        ]
+    ).write_parquet(layout.out / "hindsight_daily.parquet")
+    with duckdb.connect(str(layout.db)) as con:
+        con.execute(
+            "CREATE TABLE ca_feed (symbol VARCHAR, isin VARCHAR, ex_date DATE, subject VARCHAR)"
+        )
+        con.execute("INSERT INTO ca_feed VALUES ('AAA', '', DATE '2024-06-06', 'Bonus 1:4')")
+    found = reports.jumps(layout).select(
+        "date", "chain_isin", "security", "previous_close", "ratio", "feed_near", "review_near"
+    )
+    assert found.rows() == [
+        (date(2024, 6, 26), EQUITY, "equity", 200.0, 0.7, "", ""),
+        (date(2024, 6, 5), EQUITY, "equity", 100.0, 1.26, "Bonus 1:4", ""),
+        (date(2024, 6, 4), ENTITLEMENT, "rights_entitlement", 10.0, 0.5, "Bonus 1:4", ""),
+    ]
 
 
 def test_available_after_ex_open_counts_a_version_known_later_on_the_ex_date():
