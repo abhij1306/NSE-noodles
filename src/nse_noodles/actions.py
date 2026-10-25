@@ -176,10 +176,11 @@ def around(series: Sequence[Bar], ex: date) -> tuple[Bar, Bar] | str:
 
 
 def _rows(con: duckdb.DuckDBPyConnection, table: str) -> list[dict]:
+    # fetchall: an unread result would block the next call on this connection (duckdb >= 2)
     exists = con.execute(
         "SELECT count(*) FROM information_schema.tables WHERE table_name = ?", [table]
-    ).fetchone()
-    if not exists or not exists[0]:
+    ).fetchall()
+    if not exists[0][0]:
         return []
     cur = con.execute(f'SELECT * FROM "{table}"')
     names = [d[0] for d in cur.description]

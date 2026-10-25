@@ -269,22 +269,32 @@ def test_proposals_read_the_feed_and_attach_research():
 # --- one build over a small archive --------------------------------------------------------------
 
 
-def _write_world(root) -> tuple[Layout, object]:
+FIRST, LAST = date(2026, 8, 24), date(2026, 11, 6)
+
+
+def _research_row(**kw) -> dict:
+    """One research CSV row: by default BBB's 1:1 demerger into CCC on DEMERGER."""
+    return {k: "" for k in RESEARCH_COLUMNS} | {
+        "table": "demerger", "symbol": "BBB", "isin": "INE000B01011", "ex_date": str(DEMERGER),
+        "leg_type": "demerger", "resulting_symbol": "CCC", "resulting_isin": "INE000C01011",
+        "ratio_a": "1", "ratio_b": "1", "our_data_wrong": "no", "confidence": "high",
+        "source_url": "https://example.com/scheme", "source_date": "2026-09-01",
+    } | kw  # fmt: skip
+
+
+def _archive(
+    root,
+    series: dict[tuple[str, str], list[Bar]],
+    tables: dict[str, list[dict]],
+    research: list[dict] = (),
+    corrections: str = "",
+) -> tuple[Layout, object]:
+    """A data folder (bars, a flat NIFTY 500, the corporate-action tables) and a curation folder."""
     layout = Layout(root / "data")
     curation = root / "curation"
     (curation / "research").mkdir(parents=True)
     layout.bars.mkdir(parents=True)
     layout.index.mkdir(parents=True)
-    a = {date(2026, 8, 24): 100.0, EX: 50.0}
-    series = {
-        ("INE000A01011", "AAA"): _bars("INE000A01011", a, date(2026, 8, 24), date(2026, 11, 6)),
-        ("INE000B01011", "BBB"): _bars(
-            "INE000B01011", {date(2026, 8, 24): 200.0, DEMERGER: 150.0},
-            date(2026, 8, 24), date(2026, 11, 6),
-        ),
-        ("INE000C01011", "CCC"): _bars("INE000C01011", {date(2026, 10, 12): 50.0},
-                                       date(2026, 10, 12), date(2026, 11, 6)),
-    }  # fmt: skip
     by_day: dict[date, list[dict]] = {}
     for (isin, symbol), bars in series.items():
         for b in bars:
@@ -300,24 +310,37 @@ def _write_world(root) -> tuple[Layout, object]:
         pl.DataFrame([index], schema=INDEX_SCHEMA).write_parquet(
             layout.index / f"date={day}.parquet"
         )
-    research = {k: "" for k in RESEARCH_COLUMNS} | {
-        "table": "demerger", "symbol": "BBB", "isin": "INE000B01011", "ex_date": "2026-09-21",
-        "leg_type": "demerger", "resulting_symbol": "CCC", "resulting_isin": "INE000C01011",
-        "ratio_a": "1", "ratio_b": "1", "our_data_wrong": "no", "confidence": "high",
-        "source_url": "https://example.com/scheme", "source_date": "2026-09-01",
-    }  # fmt: skip
-    pl.DataFrame([research]).write_csv(curation / "research" / "r.csv")
-    (curation / "corrections.tsv").write_text(
-        "replace\tINE000A01011\t2026-10-05\tdividend\t2.5\t\tboard revised\t2026-10-01\n",
-        encoding="utf-8",
-    )
-    split = {"instrument_class": "equity", "classification_source": "nse"}
+    if research:
+        pl.DataFrame(list(research)).write_csv(curation / "research" / "r.csv")
+    (curation / "corrections.tsv").write_text(corrections, encoding="utf-8")
+    with duckdb.connect(str(layout.db)) as con:
+        for name, rows in tables.items():
+            frame = pl.DataFrame(rows)  # noqa: F841 - read by the query below
+            con.execute(f'CREATE TABLE "{name}" AS SELECT * FROM frame')
+    return layout, curation
+
+
+def _built(layout: Layout, table: str, columns: str) -> list[tuple]:
+    with duckdb.connect(str(layout.db), read_only=True) as con:
+        return con.execute(f'SELECT {columns} FROM "{table}" ORDER BY ALL').fetchall()
+
+
+SPLIT = {"instrument_class": "equity", "classification_source": "nse"}
+PRICES = {
+    ("INE000A01011", "AAA"): _bars("INE000A01011", {FIRST: 100.0, EX: 50.0}, FIRST, LAST),
+    ("INE000B01011", "BBB"): _bars("INE000B01011", {FIRST: 200.0, DEMERGER: 150.0}, FIRST, LAST),
+    ("INE000C01011", "CCC"): _bars("INE000C01011", {date(2026, 10, 12): 50.0},
+                                   date(2026, 10, 12), LAST),
+}  # fmt: skip
+
+
+def _write_world(root) -> tuple[Layout, object]:
     tables = {
         "splits_bonus": [
-            _feed("s", subject="Face Value Split", **split, parse_status="ok", legs="split=1/2"),
-            _feed("s", subject="Bonus 1:1", **split, parse_status="ok", legs="bonus=1/2",
+            _feed("s", subject="Face Value Split", **SPLIT, parse_status="ok", legs="split=1/2"),
+            _feed("s", subject="Bonus 1:1", **SPLIT, parse_status="ok", legs="bonus=1/2",
                   isin="INE000Z01011", symbol="ZZZ"),
-            _feed("s", subject="Bonus ?", **split, parse_status="unparsed", legs="",
+            _feed("s", subject="Bonus ?", **SPLIT, parse_status="unparsed", legs="",
                   ex_date=date(2026, 10, 19)),
         ],
         "dividends": [
@@ -330,11 +353,8 @@ def _write_world(root) -> tuple[Layout, object]:
                             ex_date=DEMERGER)],
         "ca_feed": [_feed("f", subject="Dividend", ex_date=date(2026, 10, 5))],
     }  # fmt: skip
-    with duckdb.connect(str(layout.db)) as con:
-        for name, rows in tables.items():
-            frame = pl.DataFrame(rows)  # noqa: F841 - read by the query below
-            con.execute(f'CREATE TABLE "{name}" AS SELECT * FROM frame')
-    return layout, curation
+    fix = "replace\tINE000A01011\t2026-10-05\tdividend\t2.5\t\tboard revised\t2026-10-01\n"
+    return _archive(root, PRICES, tables, [_research_row()], fix)
 
 
 def test_build_accepts_confirmed_events_and_reviews_the_rest(tmp_path):
@@ -353,12 +373,24 @@ def test_build_accepts_confirmed_events_and_reviews_the_rest(tmp_path):
         "skipped": {"not_equity_share": 1},
         "corrections": {"applied": 1},
     }  # fmt: skip
-    with duckdb.connect(str(layout.db), read_only=True) as con:
-        rows = con.execute(
-            "SELECT action_type, ex_date, value, cash, basis FROM actions ORDER BY ex_date"
-        ).fetchall()
-    assert rows == [
-        ("split", EX, 0.5, None, "stated_ratio"),
-        ("demerger", DEMERGER, 0.75, None, "resulting_ratio"),
-        ("dividend", date(2026, 10, 5), 1.0, 2.5, "correction"),
+    assert _built(layout, "actions", "ex_date, action_type, value, cash, basis") == [
+        (EX, "split", 0.5, None, "stated_ratio"),
+        (DEMERGER, "demerger", 0.75, None, "resulting_ratio"),
+        (date(2026, 10, 5), "dividend", 1.0, 2.5, "correction"),
     ]
+
+
+NOW = datetime(2026, 11, 10, 18)
+
+
+def _split_row(**kw) -> dict:
+    return _feed(
+        "s", subject="Face Value Split", **SPLIT, parse_status="ok", legs="split=1/2", **kw
+    )
+
+
+def test_build_reads_a_database_without_every_table(tmp_path):
+    prices = {k: v for k, v in PRICES.items() if k[1] == "AAA"}
+    layout, curation = _archive(tmp_path, prices, {"splits_bonus": [_split_row()]})
+    assert actions.build(layout, curation, NOW)["events"] == {"split": 1}
+    assert _built(layout, "actions", "ex_date, value") == [(EX, 0.5)]
