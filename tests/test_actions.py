@@ -89,6 +89,18 @@ def test_a_row_repeating_another_rows_factor_is_skipped_as_a_duplicate():
     assert ([r["reason"] for r in out.skipped], out.review) == (["duplicate_event"], [])
 
 
+def test_a_split_and_a_bonus_on_one_session_are_gated_as_one_product():
+    out = Outcome()
+    both = _split(legs=(Leg("split", Fraction(1, 2)), Leg("bonus", Fraction(1, 2))))
+    # alone either leg (0.5) misses an open of 25.5 on 100; together (0.25) they explain it
+    got = actions.decide_price_group("C", BEFORE, _on(25.5), [both], out)
+    assert _decided(got) == [
+        ("split", 0.5, "gate_confirmed", "ex_open"),
+        ("bonus", 0.5, "gate_confirmed", "ex_open"),
+    ]
+    assert json.loads(got[0]["evidence"])["expected"] == "0.2500"
+
+
 def test_rights_lost_in_the_session_move_are_kept_unconfirmed():
     out = Outcome()
     # TERP factor (4*100 + 80) / (5*100) = 0.96; an open of 98 cannot tell it from noise
@@ -162,6 +174,36 @@ def test_a_demerger_without_research_needs_it_unless_the_drop_held():
     assert [r["reason"] for r in out.review] == ["needs_research:no_drop"]
     got = actions.decide_demerger("B", _demerger(()), PARENT, Fraction(1), {}, {}, FLAT, out)
     assert _decided(got) == [("demerger", 0.75, "market_gap", "settled_close")]
+
+
+def test_a_demerger_gap_is_divided_by_the_market_move_that_night():
+    # NIFTY 500 opens 4% down on the ex-date and stays there: 150/200 = 0.75 raw, 0.78125 neutral
+    index = {d: (1000.0, 1000.0) if d < DEMERGER else (960.0, 960.0) for d in FLAT}
+    out = Outcome()
+    got = actions.decide_demerger("B", _demerger(()), PARENT, Fraction(1), {}, {}, index, out)
+    row = got[0]
+    assert (row["value"], row["raw_gap"], row["basis"], row["available_basis"]) == (
+        0.78125, 0.75, "index_neutral_gap", "settled_close",
+    )  # fmt: skip
+    assert (row["band_low"], row["band_high"]) == (0.75, 0.78125)
+    assert json.loads(row["evidence"])["index_overnight"] == "0.9600"
+
+
+def test_a_ratio_version_far_from_the_gap_is_disputed_and_reviewed():
+    # the resulting company first closes at 80: 1 - 80/200 = 0.6 against a gap of 0.75
+    child = _bars("INE000C01011", {date(2026, 10, 12): 80.0}, date(2026, 10, 12), LAST)
+    out = Outcome()
+    got = actions.decide_demerger(
+        "B", _demerger(), PARENT, Fraction(1),
+        {"INE000C01011": child}, {("r.csv", 2): "INE000C01011"}, FLAT, out,
+    )  # fmt: skip
+    assert [(r["basis"], r["value"], r["status"], r["available_basis"]) for r in got] == [
+        ("index_neutral_gap", 0.75, "accepted", "settled_close"),
+        ("resulting_ratio", 0.6, "disputed", "resulting_first_close"),
+    ]
+    assert got[0]["method"] == "market_gap; ratio 0.6000 disagrees"
+    assert got[1]["method"] == "resulting_ratio; ex-date version 0.7500 disagrees: review"
+    assert [r["reason"] for r in out.review] == ["demerger_versions_disagree"]
 
 
 def test_a_demerger_research_calls_an_amalgamation_or_doubts_is_not_priced():
