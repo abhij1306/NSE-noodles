@@ -369,7 +369,7 @@ def _accept(chain: str, before: Bar, p: Proposal, evidence: dict, v: Version) ->
     published = (
         latest(*(end_of(r.source_date) for r in v.terms)) if v.terms else end_of(p.announced_on)
     )
-    researched = (p.research and v.kind in ("rights", "demerger")) or p.source == "research"
+    researched = bool(v.terms) or p.source == "research"  # the value read research terms
     return {
         "chain_isin": chain,
         "isin": before.isin,

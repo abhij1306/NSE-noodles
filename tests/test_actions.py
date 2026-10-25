@@ -84,6 +84,19 @@ def test_rights_priced_at_or_above_the_market_are_skipped():
     assert [r["reason"] for r in out.skipped] == ["rights_at_or_above_price"]
 
 
+def test_rights_priced_on_nse_terms_are_sourced_from_nse():
+    # research without an issue price cannot price the issue: NSE's terms are used
+    p = _rights(80)
+    p.research = [replace(RESEARCH, table="rights", ex_date=EX, record_date=None, ratio=None)]
+    priced = replace(p.research[0], issue_price=Fraction(80), ratio=(Fraction(1), Fraction(4)))
+    sources = []
+    for research in (p.research, [priced]):
+        p.research = research
+        got = actions.decide_price_group("C", BEFORE, _on(96.0), [p], Outcome())
+        sources.append((got[0]["source"], got[0]["value"]))
+    assert sources == [("nse_feed", 0.96), ("research", 0.96)]
+
+
 def _bars(isin: str, closes: dict[date, float], first: date, last: date) -> list[Bar]:
     out, day, close = [], first, None
     while day <= last:
