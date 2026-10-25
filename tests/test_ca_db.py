@@ -140,7 +140,7 @@ def test_build_tables(tmp_path):
         ("ABC", date(2026, 6, 10), "split=1/5", "ok", "equity", "subject", "",
          date(2026, 5, 1), "abc-split.pdf"),
         ("ABC", date(2026, 6, 20), "bonus=1/2", "ok", "equity", "announcement", "abc-bonus.pdf",
-         date(2026, 5, 1), "abc-split.pdf"),
+         date(2026, 5, 2), "abc-bonus.pdf"),  # the split filing a day earlier does not date it
         ("DEF", date(2026, 6, 20), "bonus=1/2", "ok", "debentures", "announcement", "def.pdf",
          date(2026, 1, 1), "def-old.pdf"),
         ("GHI", date(2026, 6, 22), "", "unparsed", "preference", "subject", "", None, ""),

@@ -261,7 +261,9 @@ class Payout:
     amount: Decimal
 
 
-_DIVIDEND = re.compile(r"dividend|(?<!sub)(?<!sub-)(?<!sub )\bdiv\b")  # "AGM/DIV-RS.2"
+# "Dividend", or its "Div" abbreviation ("AGM/DIV-RS.2", "Int Div"), never "Sub-Div"
+DIVIDEND_WORD = re.compile(r"dividend|(?<!sub)(?<!sub-)(?<!sub )\bdiv\b", re.I)
+_DIVIDEND = DIVIDEND_WORD
 _MONEY = re.compile(rf"(?:\b(?:rs|re|inr)\b\.?|₹)\s*+(?:[-:]\s*+)?{_GROUPED}")
 _PAISE = re.compile(r"\bpaise\b|\bpaisa\b")
 _PERCENT = re.compile(r"(?<![\d.])\d++(?:\.\d++)?+\s*+%")

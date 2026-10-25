@@ -64,7 +64,7 @@ NOTICE = {
         re.I | re.S,
     ),
     "bonus_instruments": re.compile(r"bonus", re.I),
-    "dividends": re.compile(r"dividend", re.I),
+    "dividends": parse.DIVIDEND_WORD,
 }
 
 
@@ -377,7 +377,7 @@ def _events(
             tables["rights_issues"].append(_rights_row(r, base))
         if parse.names_demerger(subject):
             tables["demergers"].append({**base, "subject": subject, "company": r["company"]})
-        if "dividend" in subject.lower() and r["ex_date"] is not None:
+        if parse.DIVIDEND_WORD.search(subject) and r["ex_date"] is not None:
             dividend_groups[(r["isin"], r["symbol"], r["ex_date"])].append(r)
     return tables, dividend_groups
 
@@ -406,11 +406,25 @@ def _dividend_row(isin: str, symbol: str, ex: date, rows: list[dict]) -> dict:
     }
 
 
+def _split_bonus_notice(subject: str) -> re.Pattern[str]:
+    """A split is announced by a filing that names a split, a bonus by one that names a bonus: a
+    split filing weeks earlier must not date a bonus (it would be known before it was)."""
+    lowered = subject.lower()
+    words = (
+        [r"split|sub-?\s*division"] if re.search(r"split|splt|sub-?\s*division", lowered) else []
+    )
+    words += ["bonus"] if "bonus" in lowered else []
+    return re.compile("|".join(words), re.I) if words else NOTICE["splits_bonus"]
+
+
 def _attach_notices(tables: dict[str, list[dict]], notices: dict[str, list[Notice]]) -> None:
     """Set `announced_on` / `notice_url` (and a demerger's `notice_source`) on every event row."""
-    for name, pattern in NOTICE.items():
+    for name, table_pattern in NOTICE.items():
         for row in tables[name]:
             filed = notices.get(row["symbol"], [])
+            pattern = table_pattern
+            if name == "splits_bonus":
+                pattern = _split_bonus_notice(row["subject"])
             if name == "demergers":
                 day, url, source = record_notice(filed, row["ex_date"], row["record_date"], pattern)
                 row["notice_source"] = source
