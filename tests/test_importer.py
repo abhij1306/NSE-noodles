@@ -2,6 +2,9 @@ import io
 import json
 import zipfile
 from datetime import date
+from pathlib import Path
+
+import pytest
 
 from nse_noodles import bhavcopy, cli, importer, nse_json
 from nse_noodles.layout import Layout, write_bytes
@@ -13,6 +16,27 @@ OLD = "SYMBOL,SERIES,OPEN,HIGH,LOW,CLOSE,LAST,PREVCLOSE,TOTTRDQTY,TOTTRDVAL,TIME
 INDEX = (
     "Index Name,Index Date,Open Index Value,High Index Value,Low Index Value,Closing Index Value"
 )
+
+
+@pytest.fixture(autouse=True)
+def _in_tmp(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # import reads only under home or the current folder
+
+
+def test_a_file_outside_home_and_the_current_folder_is_not_read(tmp_path, monkeypatch):
+    layout = Layout(tmp_path / "data")
+    (tmp_path / "away").mkdir()
+    (tmp_path / "away" / "bhav.csv").write_bytes(_udiff("2026-10-23"))
+    (tmp_path / "here").mkdir()
+    monkeypatch.chdir(tmp_path / "here")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    report = importer.run(layout, [tmp_path / "away"])
+    assert report.rejected == [
+        f"{tmp_path / 'away' / 'bhav.csv'}: outside your home folder and the current folder: "
+        "run noodles from the folder that holds it, or move it under your home folder"
+    ]
+    monkeypatch.chdir(tmp_path / "away")
+    assert importer.run(layout, [Path("bhav.csv")]).imported == {"bhavcopy": 1}
 
 
 def _udiff(day: str, close: str = "11") -> bytes:

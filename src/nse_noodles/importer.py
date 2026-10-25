@@ -15,6 +15,7 @@ under its canonical name:
 A folder is read through; a zip that is not itself a bhavcopy is opened and each file in it
 read (zips inside it too, one level). A file that names a day in its name but holds another
 day's rows is refused. Another data folder's `raw/` imports whole (its bookkeeping is skipped).
+Only files under the home folder or the current folder are read (`contained`).
 
 A day already on disk with other bytes is a conflict and left alone, unless `replace`:
 replacing it deletes the day's parsed file, so the next build reads the new one. A list is a
@@ -28,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import zipfile
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -203,14 +205,25 @@ def plan(layout: Layout, name: str, data: bytes, kind: str, market: str) -> Plan
     return planners[kind]()
 
 
-def files(paths: list[Path]) -> Iterator[tuple[str, bytes]]:
-    """(label, bytes) of every file under `paths`, folders read through in name order; hidden
-    files and noodles' own bookkeeping (another data folder's `raw/` imports as is) skipped."""
-    for path in paths:
-        if path.is_dir():
-            yield from files(sorted(p for p in path.rglob("*") if p.is_file()))
-        elif not path.name.startswith(".") and path.name not in OWN_FILES:
-            yield str(path), path.read_bytes()
+def files(path: Path) -> list[Path]:
+    """`path`, or every file under it in name order; hidden files and noodles' own bookkeeping
+    (another data folder's `raw/` imports as is) left out."""
+    found = sorted(p for p in path.rglob("*") if p.is_file()) if path.is_dir() else [path]
+    return [p for p in found if not p.name.startswith(".") and p.name not in OWN_FILES]
+
+
+def contained(path: Path) -> Path:
+    """`path` resolved (links followed), when it lies under the home folder or the current
+    folder; ValueError otherwise. An agent running `noodles import` never reads system files,
+    and a link in a folder never leads out of those two."""
+    real = os.path.realpath(path)
+    for base in (os.path.realpath(Path.home()), os.path.realpath(Path.cwd())):
+        if real == base or real.startswith(os.path.join(base, "")):
+            return Path(real)
+    raise ValueError(
+        "outside your home folder and the current folder: run noodles from the folder that "
+        "holds it, or move it under your home folder"
+    )
 
 
 def _entries(label: str, data: bytes) -> Iterator[tuple[str, bytes]]:
@@ -230,6 +243,14 @@ class _Importer:
         self.report = Report()
         self.memo = NotFoundMemo(layout.raw / "not_found.json")
         self.log: list[dict] = []
+
+    def read(self, path: Path) -> None:
+        try:
+            data = contained(path).read_bytes()
+        except (OSError, ValueError) as exc:
+            self.report.rejected.append(f"{path}: {exc}")
+            return
+        self.one(str(path), data)
 
     def one(self, label: str, data: bytes, depth: int = 0) -> None:
         try:
@@ -293,8 +314,9 @@ def run(
     """File every file under `paths` (each read as `kind`, else recognised) into `raw/`."""
     importer = _Importer(layout, kind, market, replace)
     try:
-        for label, data in files(paths):
-            importer.one(label, data)
+        for top in paths:
+            for path in files(top):
+                importer.read(path)
     finally:
         importer.close()
     return importer.report

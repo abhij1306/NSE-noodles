@@ -131,6 +131,9 @@ Each file is recognised by its content, not its name:
 | `corporate_actions`, `announcements`, `board_meetings` | The JSON NSE's website answers: a list of rows, or `{"data": [...]}` | `raw/nse/<dataset>/<market>/import-<hash>.json` |
 | `symbolchange`, `namechange`, `holidays` | NSE's `symbolchange.csv`, `namechange.csv`, holiday JSON | `raw/lists/` |
 
+- Only files under your home folder or the current folder are read, so an agent running
+  `import` cannot be steered to system files. For files elsewhere (another drive), run
+  `noodles` from their folder: `cd D:\downloads` then `noodles --data ... import .`.
 - A folder is read through. A zip that is not itself a bhavcopy is opened and every file in it
   imported, so a month of bhavcopies in one zip works.
 - A file whose name gives a day (NSE's names do) must hold that day's rows, else it is refused.
