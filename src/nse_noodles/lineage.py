@@ -200,7 +200,7 @@ def _factor(chosen: Mapping[tuple[date, str], Action], after: date, through: dat
     return f
 
 
-def decide(
+def decide(  # noqa: C901
     c: Candidate,
     actions: Sequence[Action],
     names: Iterable[NameChange] = (),

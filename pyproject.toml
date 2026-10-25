@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=8", "pytest-timeout>=2.3", "ruff>=0.6"]
 
 [project.scripts]
 noodles = "nse_noodles.cli:main"
@@ -30,8 +30,14 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF", "C90"]
 ignore = ["S101", "S608", "RUF001", "RUF002", "RUF003", "SIM905"]
+
+# New code stays at or under 10. Functions already above it carry `# noqa: C901` until they are split.
+[tool.ruff.lint.mccabe]
+max-complexity = 10
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+timeout = 60
+addopts = "--durations=10"
