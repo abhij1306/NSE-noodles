@@ -9,15 +9,16 @@ from __future__ import annotations
 import csv
 import io
 import re
+from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 
 import polars as pl
 
+from .config import DEFAULT, Config
 from .http import NseClient
 from .layout import Layout, NotFoundMemo, atomic_write, write_bytes
 
-ARCHIVE_URL = "https://nsearchives.nseindia.com/content/indices/"
 NIFTY_50, NIFTY_500 = "NIFTY 50", "NIFTY 500"
 DEFAULT_NAMES = (NIFTY_50, NIFTY_500, "NIFTY SMALLCAP 250", "INDIA VIX")
 ALIASES = {
@@ -38,6 +39,28 @@ INDEX_SCHEMA = {
 
 def archive_name(day: date) -> str:
     return f"ind_close_all_{day:%d%m%Y}.csv"
+
+
+def trade_day(text: str) -> date:
+    """The day an archive's rows are dated (its most common `Index Date`); ValueError when the
+    text is no index archive."""
+    reader = csv.DictReader(io.StringIO(text))
+    header = {(h or "").strip().lower() for h in reader.fieldnames or ()}
+    if not {"index name", "index date", "closing index value"} <= header:
+        raise ValueError(f"not an index archive (columns {sorted(header)[:8]})")
+    days = Counter(_dmy(row) for row in reader)
+    days.pop(None, None)
+    if not days:
+        raise ValueError("no row names a trading day")
+    return days.most_common(1)[0][0]  # type: ignore[return-value]
+
+
+def _dmy(row: dict[str, str]) -> date | None:
+    raw = next((v for k, v in row.items() if (k or "").strip().lower() == "index date"), "")
+    try:
+        return datetime.strptime((raw or "").strip(), "%d-%m-%Y").date()
+    except ValueError:
+        return None
 
 
 def _num(raw: str) -> float | None:
@@ -89,7 +112,12 @@ def session_days(layout: Layout) -> list[date]:
 
 
 def pull(
-    layout: Layout, client: NseClient, days: list[date], *, recheck: bool = False
+    layout: Layout,
+    client: NseClient,
+    days: list[date],
+    *,
+    recheck: bool = False,
+    cfg: Config = DEFAULT,
 ) -> PullReport:
     memo = NotFoundMemo(layout.raw / "not_found.json")
     report = PullReport()
@@ -100,7 +128,7 @@ def pull(
             continue
         if memo.has("indices", day) and not recheck:
             continue
-        got = client.get(ARCHIVE_URL + archive_name(day))
+        got = client.get(cfg.url("indices", day, archive_name(day)))
         if got.status == "ok" and parse(got.data.decode("utf-8-sig", errors="replace"), day):
             write_bytes(path, got.data)
             report.downloaded += 1

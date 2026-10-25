@@ -13,10 +13,11 @@ Order of work:
    factor accepted on the same day) divided by the NIFTY 500's move over the same night
    (`factors.NEUTRAL_INDEX`), accepted by `factors.market_factor`; the raw gap is kept beside
    it. A demerger only research names (not in NSE's feed) has no confirmed ex-date, so a held
-   drop alone never accepts it: a cross-check must agree, else it is reviewed. Once every resulting company has a first close, the research ratio priced there
-   (`factors.ratio_factor`, the child's close brought back to the ex-date by the index) is a
-   second version, `disputed` and a review case when it is more than DEMERGER_VERSION_TOL from
-   the first. Each demerger version records its band (`factors.band`).
+   drop alone never accepts it: a cross-check must agree, else it is reviewed. Once every
+   resulting company has a first close, the research ratio priced there (`factors.ratio_factor`,
+   the child's close brought back to the ex-date by the index) is a second version, `disputed`
+   and a review case when it is more than DEMERGER_VERSION_TOL from the first. Each demerger
+   version records its band (`factors.band`).
 4. Cash: dividends (total-return factor 1 - D / previous raw close; P&L gets raw prices plus
    cash) and bonuses of debentures / preference shares worth >= 1% of the price.
 5. The reviewed correction list, last: each line ADDS a version (a deletion is a version of

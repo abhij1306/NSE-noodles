@@ -7,6 +7,9 @@ across symbol changes: the history starts there.
 Every security that traded on a day is in that day's file, delisted ones included, so a
 history built from the archives (and never filtered by today's listing) is survivorship-bias
 free by construction.
+
+A file's format is read from its header, never assumed from its date: a file in neither known
+format (NSE changed it) fails the build loudly instead of parsing as empty rows.
 """
 
 from __future__ import annotations
@@ -17,19 +20,20 @@ import logging
 import math
 import re
 import zipfile
-from collections.abc import Iterable
+from collections import Counter
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 import polars as pl
 
+from .config import DEFAULT, FIRST_ISIN_DAY, Config
 from .http import NseClient
 from .layout import Layout, NotFoundMemo, atomic_write, write_bytes
 from .parse import ISIN_RE
 
 logger = logging.getLogger(__name__)
 
-FIRST_ISIN_DAY = date(2011, 6, 22)
 OLD_LAST_DAY = date(2024, 7, 5)
 UDIFF_FIRST_DAY = date(2024, 7, 8)
 _MONTHS = "JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC".split()
@@ -69,14 +73,8 @@ def archive_name(day: date) -> str:
     return f"BhavCopy_NSE_CM_0_0_0_{day:%Y%m%d}_F_0000.csv.zip"
 
 
-def archive_url(day: date) -> str:
-    name = archive_name(day)
-    if format_for(day) == "old":
-        return (
-            "https://nsearchives.nseindia.com/content/historical/EQUITIES/"
-            f"{day.year}/{_MONTHS[day.month - 1]}/{name}"
-        )
-    return f"https://nsearchives.nseindia.com/content/cm/{name}"
+def archive_url(day: date, cfg: Config = DEFAULT) -> str:
+    return cfg.url("bhavcopy", day, archive_name(day), old=format_for(day) == "old")
 
 
 def candidate_days(start: date, end: date) -> list[date]:
@@ -100,7 +98,12 @@ class PullReport:
 
 
 def pull(
-    layout: Layout, client: NseClient, days: Iterable[date], *, recheck: bool = False
+    layout: Layout,
+    client: NseClient,
+    days: Iterable[date],
+    *,
+    recheck: bool = False,
+    cfg: Config = DEFAULT,
 ) -> PullReport:
     """Download each missing day's zip once into `raw/bhavcopy/`. A 404 is remembered as a
     holiday candidate; an error is retried by the next run."""
@@ -114,8 +117,8 @@ def pull(
         if memo.has("bhavcopy", day) and not recheck:
             report.skipped_known += 1
             continue
-        got = client.get(archive_url(day))
-        if got.status == "ok" and _readable(got.data):
+        got = client.get(archive_url(day, cfg))
+        if got.status == "ok" and readable(got.data):
             write_bytes(path, got.data)
             memo.discard("bhavcopy", day)
             report.downloaded += 1
@@ -205,12 +208,36 @@ def _csv_text(data: bytes) -> str:
         return archive.read(names[0]).decode("utf-8-sig", errors="replace")
 
 
-def _readable(data: bytes) -> bool:
+def columns(header: Iterable[str] | None) -> tuple[dict[str, str], Callable[[str], date | None]]:
+    """The column names of the format a header is in, and how it writes a date; ValueError for
+    a header in neither format."""
+    got = {(h or "").strip() for h in header or ()}
+    for cols, parse_date in ((_OLD, _old_date), (_UDIFF, _iso_date)):
+        if set(cols.values()) <= got:
+            return cols, parse_date
+    raise ValueError(f"not a known bhavcopy format (columns {sorted(got)[:12]})")
+
+
+def readable(data: bytes) -> bool:
+    """A zip of one CSV in a known bhavcopy format."""
     try:
-        _csv_text(data)
+        text = _csv_text(data)
+        columns(next(csv.reader(io.StringIO(text)), None))
     except (ValueError, zipfile.BadZipFile):
         return False
     return True
+
+
+def trade_day(data: bytes) -> date:
+    """The day a zip's rows are dated (the most common date in it); ValueError when the zip is
+    no bhavcopy or names no day."""
+    reader = csv.DictReader(io.StringIO(_csv_text(data)))
+    cols, parse_date = columns(reader.fieldnames)
+    days = Counter(parse_date(row.get(cols["date"]) or "") for row in reader)
+    days.pop(None, None)
+    if not days:
+        raise ValueError("no row names a trading day")
+    return days.most_common(1)[0][0]  # type: ignore[return-value]
 
 
 def _bar(row: dict[str, str], cols: dict[str, str], day: date, series: str) -> dict | None:
@@ -239,11 +266,11 @@ def _bar(row: dict[str, str], cols: dict[str, str], day: date, series: str) -> d
 
 def parse(day: date, data: bytes) -> ParsedDay:
     """One zip as rows of `BAR_SCHEMA`, one per ISIN (the best-ranked series)."""
-    fmt = format_for(day)
-    cols, parse_date = (_OLD, _old_date) if fmt == "old" else (_UDIFF, _iso_date)
+    reader = csv.DictReader(io.StringIO(_csv_text(data)))
+    cols, parse_date = columns(reader.fieldnames)
     out = ParsedDay(day)
     best: dict[str, dict] = {}
-    for raw in csv.DictReader(io.StringIO(_csv_text(data))):
+    for raw in reader:
         row = {(k or "").strip(): (v or "").strip() for k, v in raw.items() if k is not None}
         series = row.get(cols["series"], "").upper()
         if series not in EQUITY_SERIES:
@@ -265,7 +292,7 @@ def parse(day: date, data: bytes) -> ParsedDay:
     return out
 
 
-def _day_of(name: str) -> date | None:
+def day_of(name: str) -> date | None:
     m = re.fullmatch(r"cm(\d{2})([A-Z]{3})(\d{4})bhav\.csv\.zip", name)
     if m:
         return date(int(m[3]), _MONTHS.index(m[2]) + 1, int(m[1]))
@@ -289,7 +316,7 @@ def build(layout: Layout, *, rebuild: bool = False) -> BuildReport:
     """Parse every downloaded zip without a parquet day file into `bars/date=YYYY-MM-DD.parquet`."""
     report = BuildReport()
     for path in sorted(layout.bhavcopy.glob("*.zip")):
-        day = _day_of(path.name)
+        day = day_of(path.name)
         if day is None:
             continue
         target = layout.bars / f"date={day.isoformat()}.parquet"

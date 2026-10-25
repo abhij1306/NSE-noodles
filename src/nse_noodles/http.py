@@ -21,12 +21,12 @@ logger = logging.getLogger(__name__)
 HOME = "https://www.nseindia.com"
 DEFAULT_INTERVAL = 2.0  # seconds between two request starts
 DEFAULT_TRIES = 5
+DEFAULT_TIMEOUT = 40.0
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/126.0.0.0 Safari/537.36"
 )
 HEADERS = {
-    "User-Agent": USER_AGENT,
     "Accept": "application/json, text/plain, text/csv, application/zip, */*",
     "Accept-Language": "en-US,en;q=0.9",
     "Referer": "https://www.nseindia.com/companies-listing/corporate-filings-actions",
@@ -44,11 +44,18 @@ class NseClient:
     `not_found` for a 404 (a holiday's missing archive file) and `error` after the last try."""
 
     def __init__(
-        self, interval: float = DEFAULT_INTERVAL, tries: int = DEFAULT_TRIES, timeout: float = 40
+        self,
+        interval: float = DEFAULT_INTERVAL,
+        tries: int = DEFAULT_TRIES,
+        timeout: float = DEFAULT_TIMEOUT,
+        user_agent: str = USER_AGENT,
+        home: str = HOME,
     ) -> None:
         self.interval = interval
         self.tries = tries
         self.timeout = timeout
+        self.headers = HEADERS | {"User-Agent": user_agent}
+        self.home = home
         self._last = 0.0
         self._client: httpx.Client | None = None
         self._warm = False
@@ -68,7 +75,7 @@ class NseClient:
     def _session(self) -> httpx.Client:
         if self._client is None:
             self._client = httpx.Client(
-                headers=HEADERS, timeout=self.timeout, follow_redirects=True
+                headers=self.headers, timeout=self.timeout, follow_redirects=True
             )
             self._warm = False
         return self._client
@@ -83,7 +90,7 @@ class NseClient:
         """Load the home page once so the session holds NSE's cookies."""
         self._pace()
         try:
-            self._session().get(HOME)
+            self._session().get(self.home)
         except httpx.HTTPError as exc:
             logger.warning("warm-up failed: %s", type(exc).__name__)
         self._warm = True
