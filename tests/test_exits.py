@@ -3,6 +3,7 @@ from datetime import date
 import pytest
 
 from nse_noodles import ca_db, exits, parse
+from nse_noodles.layout import Layout
 
 # Thu 3, Fri 4, Mon 7 (Tue 8 a holiday), Wed 9, Thu 10, Fri 11 Sep 2026
 SESSIONS = [date(2026, 9, d) for d in (3, 4, 7, 9, 10, 11)]
@@ -135,3 +136,12 @@ def test_record_notice_prefers_an_announcement_on_the_same_day():
     notices = [(day, text, "", "board_meeting"), (day, text, "https://x/a.pdf", "announcement")]
     found = ca_db.record_notice(notices, ex, ex, ca_db.NOTICE["demergers"])
     assert found == (day, "https://x/a.pdf", "announcement")
+
+
+def test_holidays_come_from_the_curation_folder_given(tmp_path):
+    layout = Layout(tmp_path / "data")
+    elsewhere = tmp_path / "my-curation"
+    elsewhere.mkdir()
+    (elsewhere / "holidays.txt").write_text("2026-10-20\n", encoding="utf-8")
+    assert exits.listed_holidays(layout, None, elsewhere) == {date(2026, 10, 20)}
+    assert exits.listed_holidays(layout) == set()

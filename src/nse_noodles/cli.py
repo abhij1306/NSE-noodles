@@ -126,7 +126,10 @@ def build_step(layout: Layout, step: str, args: argparse.Namespace) -> bool:
         if args.as_of is None:
             raise SystemExit("build replay needs --as-of YYYY-MM-DD")
         _print(f"replay as of {args.as_of}", adjusted.build(layout, args.as_of))
-        _print(f"demerger exits as of {args.as_of}", exits.write(layout, args.holidays, args.as_of))
+        _print(
+            f"demerger exits as of {args.as_of}",
+            exits.write(layout, args.holidays, args.as_of, curation),
+        )
     elif step == "reports":
         _print("reports", reports.write_all(layout, args.holidays))
     return True

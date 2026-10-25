@@ -56,10 +56,13 @@ COLUMNS = {
 }
 
 
-def listed_holidays(layout: Layout, holidays_file: str | None = None) -> set[date]:
-    """The trading holidays known: `curation/holidays.txt`, an extra list, and NSE's current
-    year's list (`raw/lists/holidays.json`) when pulled."""
-    listed = read_holidays(layout.root / "curation" / "holidays.txt")
+def listed_holidays(
+    layout: Layout, holidays_file: str | None = None, curation: Path | None = None
+) -> set[date]:
+    """The trading holidays known: `holidays.txt` in the curation folder (`--curation`, else
+    `DATA/curation`), an extra list, and NSE's current year's list (`raw/lists/holidays.json`)
+    when pulled."""
+    listed = read_holidays((curation or layout.root / "curation") / "holidays.txt")
     if holidays_file:
         listed |= read_holidays(Path(holidays_file))
     live = layout.lists / "holidays.json"
@@ -166,7 +169,10 @@ def calendar(
 
 
 def write(
-    layout: Layout, holidays_file: str | None = None, as_of: date | None = None
+    layout: Layout,
+    holidays_file: str | None = None,
+    as_of: date | None = None,
+    curation: Path | None = None,
 ) -> dict[str, int]:
     """Write the exit calendar (all of it, or as of the close of `as_of`); returns counts."""
     with duckdb.connect(str(layout.db), read_only=True) as con:
@@ -187,7 +193,11 @@ def write(
     if as_of is not None:
         sessions = [d for d in sessions if d <= as_of]
     frame = calendar(
-        rows, sessions, listed_holidays(layout, holidays_file), dict(cmap.iter_rows()), as_of
+        rows,
+        sessions,
+        listed_holidays(layout, holidays_file, curation),
+        dict(cmap.iter_rows()),
+        as_of,
     )
     name = "demerger_exits.csv" if as_of is None else f"demerger_exits_asof={as_of}.csv"
     atomic_write(layout.out / name, lambda tmp: frame.write_csv(tmp))
