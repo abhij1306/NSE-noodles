@@ -131,7 +131,7 @@ def build_step(layout: Layout, step: str, args: argparse.Namespace) -> bool:
             exits.write(layout, args.holidays, args.as_of, curation),
         )
     elif step == "reports":
-        _print("reports", reports.write_all(layout, args.holidays))
+        _print("reports", reports.write_all(layout, args.holidays, curation))
     return True
 
 

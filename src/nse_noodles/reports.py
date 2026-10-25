@@ -24,6 +24,7 @@ import json
 from bisect import bisect_left
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import duckdb
 import polars as pl
@@ -154,12 +155,14 @@ def _index_missing(layout: Layout, sessions: list[date]) -> list[str]:
     return [d.isoformat() for d in sessions if d >= index_days[0] and d not in have_index]
 
 
-def coverage(layout: Layout, holidays_file: str | None = None) -> dict[str, list[str]]:
+def coverage(
+    layout: Layout, holidays_file: str | None = None, curation: Path | None = None
+) -> dict[str, list[str]]:
     sessions = bar_sessions(layout)
     if not sessions:
         return {}
     memo = NotFoundMemo(layout.raw / "not_found.json")
-    listed = exits.listed_holidays(layout, holidays_file)
+    listed = exits.listed_holidays(layout, holidays_file, curation)
     have = set(sessions)
     out: dict[str, list[str]] = {k: [] for k in COVERAGE_LISTS}
     day = sessions[0]
@@ -213,10 +216,12 @@ def adjustment_log(layout: Layout) -> pl.DataFrame:
     return log.with_columns(pl.Series("lag_sessions", lags, dtype=pl.Int64))
 
 
-def write_all(layout: Layout, holidays_file: str | None = None) -> dict[str, object]:
+def write_all(
+    layout: Layout, holidays_file: str | None = None, curation: Path | None = None
+) -> dict[str, object]:
     j = jumps(layout)
     atomic_write(layout.out / "jumps.csv", lambda tmp: j.write_csv(tmp))
-    cov = coverage(layout, holidays_file)
+    cov = coverage(layout, holidays_file, curation)
     atomic_write(
         layout.out / "coverage.json",
         lambda tmp: tmp.write_text(json.dumps(cov, indent=1), encoding="utf-8"),
@@ -229,7 +234,7 @@ def write_all(layout: Layout, holidays_file: str | None = None) -> dict[str, obj
     with duckdb.connect(str(layout.db), read_only=True) as con:
         all_versions = con.sql(VERSIONS_SQL).pl()
     atomic_write(layout.out / "factor_versions.csv", lambda tmp: all_versions.write_csv(tmp))
-    demerger_exits = exits.write(layout, holidays_file)
+    demerger_exits = exits.write(layout, holidays_file, curation=curation)
     by_security = j.group_by("security").len().sort("security").rows() if j.height else []
     return {
         "jumps": j.height,
