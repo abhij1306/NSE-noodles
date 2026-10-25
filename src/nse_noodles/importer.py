@@ -241,7 +241,7 @@ class _Importer:
                 return
             kind = self.kind or detect(label, data)
             self.store(label, plan(self.layout, label, data, kind, self.market))
-        except (ValueError, zipfile.BadZipFile, UnicodeError) as exc:
+        except (ValueError, zipfile.BadZipFile) as exc:  # UnicodeError is a ValueError
             self.report.rejected.append(f"{label}: {exc}")
 
     def store(self, label: str, p: Planned) -> None:
