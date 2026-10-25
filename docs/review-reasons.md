@@ -37,8 +37,8 @@ The ex-date version is the index-neutralised gap ([method rule 16](method.md#fac
 accepted when a cross-check agrees, or, with none, when the drop is material and held. Otherwise
 the reason says why. The prefix `needs_research:` means there is no research row yet.
 
-The code also names `*_date_unconfirmed` variants, but every demerger ex-date is currently
-treated as confirmed, so they do not occur.
+A demerger that only your research names (NSE's feed has no row for it) has no confirmed
+ex-date, so the held-drop route is closed to it: only an agreeing cross-check accepts it.
 
 | Reason | Meaning | What to do |
 |---|---|---|
@@ -47,6 +47,7 @@ treated as confirmed, so they do not occur.
 | `needs_research:no_drop`, `no_drop` | The gap is not below 1 | Check the ex-date and the ISIN; possibly not a demerger of this company |
 | `gap_disagrees_gap_not_material`, `gap_disagrees_gap_not_held` | Research gave a cross-check, it disagrees with the gap, and the gap alone is not enough | Check the ratio, the resulting company, the dates |
 | `no_cross_check_gap_not_material`, `no_cross_check_gap_not_held` | Research exists but gives no usable cross-check (no ratio priced, no CoA) | Add the ratio or CoA |
+| `no_cross_check_date_unconfirmed`, `gap_disagrees_date_unconfirmed` | A research-only demerger (not in NSE's feed) with no cross-check, or one that disagrees with the gap | Add the ratio (with the resulting company trading) or the CoA split; check the ex-date |
 | `demerger_versions_disagree` | The ratio-priced factor is more than +10% / −9.1% (log distance over ln 1.1) from the ex-date version. The ex-date version stays; the ratio version is `disputed` and never used | Check the ratio, the resulting company and its first session |
 | `low_confidence` | A research leg has `low` confidence | Better sources |
 | `date_disputed` | A research row matched within 60 days of NSE's ex-date but names another ex-date, or a `record_date` (within 60 days) that is not 0 to 7 days after NSE's ex-date | Check the dates; if NSE's is wrong, `our_data_wrong` and an `add` correction at the right date |
