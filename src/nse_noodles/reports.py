@@ -139,9 +139,7 @@ def _day_status(day: date, have: set[date], listed: set[date], memo: NotFoundMem
         return "on_listed_holiday" if day in listed else None
     if memo.has("bhavcopy", day):
         return "holiday" if day in listed else "gap"
-    if not (date(2024, 7, 5) < day < date(2024, 7, 8)):
-        return "unaccounted"
-    return None
+    return "unaccounted"
 
 
 def _index_missing(layout: Layout, sessions: list[date]) -> list[str]:
