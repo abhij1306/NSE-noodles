@@ -68,7 +68,7 @@ def parse(text: str, day: date, names: tuple[str, ...] | None = None) -> list[di
         ]
         if values[3] is None:
             continue
-        o, h, low, c = (v if v is not None else values[3] for v in values)
+        o, h, low, c = values  # a missing open stays missing: never the close in its place
         out.append({"date": day, "index_name": name, "open": o, "high": h, "low": low, "close": c})
     return out
 

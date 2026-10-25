@@ -102,6 +102,8 @@ class NseClient:
             got = self._attempt(url, params, attempt)
             if got is not None:
                 return got
+            if attempt + 1 == self.tries:
+                break
             time.sleep(2 + 2 * attempt)
             if attempt == 1:
                 self.reset()

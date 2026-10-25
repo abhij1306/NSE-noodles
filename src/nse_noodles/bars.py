@@ -48,12 +48,8 @@ class Span:
 
 def connect(layout: Layout) -> duckdb.DuckDBPyConnection:
     con = duckdb.connect()
-    con.execute(f"CREATE VIEW bars AS SELECT * FROM read_parquet('{layout.bars_glob()}')")
+    con.execute(f"CREATE VIEW bars AS SELECT * FROM read_parquet({layout.bars_glob_sql()})")
     return con
-
-
-def has_bars(layout: Layout) -> bool:
-    return any(layout.bars.glob("date=*.parquet"))
 
 
 def sessions(layout: Layout) -> list[date]:

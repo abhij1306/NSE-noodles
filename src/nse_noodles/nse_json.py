@@ -10,6 +10,7 @@ current month is fetched again until it has ended (`--refresh-current`).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
@@ -109,7 +110,8 @@ def pull(
     folder = layout.nse(dataset, index)
     for first, last in months(start, end):
         path = folder / f"{first:%Y-%m}.json"
-        whole_month = first.day == 1 and (last + timedelta(days=1)).day == 1
+        # whole only once it has ended: a month fetched on its last day is still being filed
+        whole_month = first.day == 1 and (last + timedelta(days=1)).day == 1 and last < today
         current = last >= today.replace(day=1)
         if path.exists() and whole_month and not (current and refresh_current):
             report.months_skipped += 1
@@ -126,12 +128,25 @@ def pull(
     return report
 
 
+def _list_ok(name: str, data: bytes) -> bool:
+    text = data.decode("utf-8-sig", errors="replace").lstrip()
+    if name.endswith(".json"):
+        try:
+            return isinstance(json.loads(text), dict)
+        except ValueError:
+            return False
+    header = text.split("\n", 1)[0]
+    return "," in header and not header.startswith("<")
+
+
 def pull_lists(layout: Layout, client: NseClient) -> dict[str, str]:
     """The symbol-change and name-change CSVs and this year's holiday list (NSE publishes only
     the current year's; past years come from your own list, see `coverage`)."""
     out = {}
     for name, url in LIST_URLS.items():
         got = client.get(url, cookies=url.startswith(API))
+        if got.status == "ok" and not _list_ok(name, got.data):
+            got = Fetched("error")  # a block page never replaces a good list
         if got.status == "ok":
             write_bytes(layout.lists / name, got.data)
         out[name] = got.status
@@ -144,13 +159,13 @@ def read_shards(layout: Layout, dataset: str, index: str = "equities") -> list[d
     folder = layout.nse(dataset, index)
     files = sorted(folder.glob("*.json"))
     full = {p.stem for p in files if len(p.stem) == 7}
-    seen: set[str] = set()
+    seen: set[bytes] = set()  # digests: years of rows with their attachment texts stay small
     out = []
     for path in files:
         if len(path.stem) > 7 and path.stem[:7] in full:
             continue
         for row in json.loads(path.read_text(encoding="utf-8")):
-            key = json.dumps(row, sort_keys=True)
+            key = hashlib.blake2b(json.dumps(row, sort_keys=True).encode(), digest_size=16).digest()
             if key not in seen:
                 seen.add(key)
                 out.append(row)

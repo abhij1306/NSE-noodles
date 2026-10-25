@@ -1,14 +1,15 @@
 """`noodles`: pull NSE's free sources and build the dataset.
 
-    noodles pull bhavcopy  --data D --from 2011-06-22 --to 2026-10-23
-    noodles pull indices   --data D --from ... --to ...      (days that have a bhavcopy)
-    noodles pull nse       --data D --dataset corporate_actions --from ... --to ...
-    noodles pull lists     --data D                          (symbol/name changes, holidays)
-    noodles build bars | ca-db | actions | hindsight | reports  --data D
-    noodles build replay   --data D --as-of YYYY-MM-DD   (point-in-time replay and exit calendar)
-    noodles run            --data D --from ... --to ...      (everything, in order)
+    noodles --data D pull bhavcopy --from 2011-06-22 --to 2026-10-23
+    noodles --data D pull indices --from ... --to ...    (days that have a bhavcopy)
+    noodles --data D pull nse --dataset corporate_actions --from ... --to ...
+    noodles --data D pull lists                          (symbol/name changes, holidays)
+    noodles --data D build bars | ca-db | actions | hindsight | reports
+    noodles --data D build replay --as-of YYYY-MM-DD     (point-in-time replay, exit calendar)
+    noodles --data D run --from ... --to ...             (everything, in order)
 
-Every step is resumable and idempotent: rerun it after an interruption.
+Every step is resumable and idempotent: rerun it after an interruption. The exit code is 1
+when a download or a build step failed (the printed counts say which).
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ def _range(args: argparse.Namespace) -> tuple[date, date]:
     return args.start, args.end or date.today()
 
 
-def pull_bhavcopy(layout: Layout, client: NseClient, args: argparse.Namespace) -> None:
+def pull_bhavcopy(layout: Layout, client: NseClient, args: argparse.Namespace) -> bool:
     start, end = _range(args)
     days = bhavcopy.candidate_days(start, end) + [d for d in args.extra_days if start <= d <= end]
     r = bhavcopy.pull(layout, client, sorted(set(days)), recheck=args.recheck)
@@ -50,9 +51,10 @@ def pull_bhavcopy(layout: Layout, client: NseClient, args: argparse.Namespace) -
             "errors": [str(d) for d in r.errors],
         },
     )
+    return not r.errors
 
 
-def pull_indices(layout: Layout, client: NseClient, args: argparse.Namespace) -> None:
+def pull_indices(layout: Layout, client: NseClient, args: argparse.Namespace) -> bool:
     start, end = _range(args)
     days = [d for d in indices.session_days(layout) if start <= d <= end]
     r = indices.pull(layout, client, days, recheck=args.recheck)
@@ -65,10 +67,12 @@ def pull_indices(layout: Layout, client: NseClient, args: argparse.Namespace) ->
             "errors": [str(d) for d in r.errors],
         },
     )
+    return not r.errors
 
 
-def pull_nse(layout: Layout, client: NseClient, args: argparse.Namespace) -> None:
+def pull_nse(layout: Layout, client: NseClient, args: argparse.Namespace) -> bool:
     start, end = _range(args)
+    ok = True
     for dataset in args.dataset:
         for index in args.index:
             r = nse_json.pull(
@@ -83,9 +87,17 @@ def pull_nse(layout: Layout, client: NseClient, args: argparse.Namespace) -> Non
                     "failed": r.failed,
                 },
             )
+            ok = ok and not r.failed
+    return ok
 
 
-def build_step(layout: Layout, step: str, args: argparse.Namespace) -> None:
+def pull_lists(layout: Layout, client: NseClient) -> bool:
+    got = nse_json.pull_lists(layout, client)
+    _print("lists", got)
+    return all(status == "ok" for status in got.values())
+
+
+def build_step(layout: Layout, step: str, args: argparse.Namespace) -> bool:
     curation = Path(args.curation) if args.curation else layout.root / "curation"
     if step == "bars":
         r = bhavcopy.build(layout, rebuild=args.rebuild)
@@ -96,11 +108,13 @@ def build_step(layout: Layout, step: str, args: argparse.Namespace) -> None:
                 "rows": r.rows,
                 "already": r.already,
                 "invalid_rows": r.invalid,
+                "wrong_date_rows": r.wrong_date,
                 "failed": r.failed,
             },
         )
         _print("index", {"days": indices.build(layout)})
-    elif step == "ca-db":
+        return not r.failed
+    if step == "ca-db":
         _print("ca-db", ca_db.build(layout))
     elif step == "actions":
         _print("actions", actions.build(layout, curation))
@@ -113,6 +127,7 @@ def build_step(layout: Layout, step: str, args: argparse.Namespace) -> None:
         _print(f"demerger exits as of {args.as_of}", exits.write(layout, args.holidays, args.as_of))
     elif step == "reports":
         _print("reports", reports.write_all(layout, args.holidays))
+    return True
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -179,31 +194,29 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _pull(layout: Layout, client: NseClient, args: argparse.Namespace) -> None:
+def _pull(layout: Layout, client: NseClient, args: argparse.Namespace) -> bool:
     if args.what == "bhavcopy":
-        pull_bhavcopy(layout, client, args)
-    elif args.what == "indices":
-        pull_indices(layout, client, args)
-    elif args.what == "nse":
-        pull_nse(layout, client, args)
-    else:
-        _print("lists", nse_json.pull_lists(layout, client))
+        return pull_bhavcopy(layout, client, args)
+    if args.what == "indices":
+        return pull_indices(layout, client, args)
+    if args.what == "nse":
+        return pull_nse(layout, client, args)
+    return pull_lists(layout, client)
 
 
-def _run(layout: Layout, client: NseClient, args: argparse.Namespace) -> None:
+def _run(layout: Layout, client: NseClient, args: argparse.Namespace) -> bool:
     """Pull everything for the range in order; the caller then builds every step."""
     args.extra_days, args.recheck, args.refresh_current, args.rebuild = [], False, False, False
-    pull_bhavcopy(layout, client, args)
-    build_step(layout, "bars", args)
-    pull_indices(layout, client, args)
+    ok = [pull_bhavcopy(layout, client, args), build_step(layout, "bars", args)]
+    ok.append(pull_indices(layout, client, args))
     args.dataset = (
         ["corporate_actions", "announcements", "board_meetings"]
         if args.with_announcements
         else ["corporate_actions"]
     )
     args.index = ["equities", "sme"]
-    pull_nse(layout, client, args)
-    _print("lists", nse_json.pull_lists(layout, client))
+    ok += [pull_nse(layout, client, args), pull_lists(layout, client)]
+    return all(ok)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -215,15 +228,15 @@ def main(argv: list[str] | None = None) -> None:
     layout.root.mkdir(parents=True, exist_ok=True)
 
     if args.cmd == "build":
-        build_step(layout, args.step, args)
-        return
-    with NseClient(interval=args.interval) as client:
-        if args.cmd == "pull":
-            _pull(layout, client, args)
-            return
-        _run(layout, client, args)
-    for step in ("bars", "ca-db", "actions", "hindsight", "reports"):
-        build_step(layout, step, args)
+        ok = build_step(layout, args.step, args)
+    else:
+        with NseClient(interval=args.interval) as client:
+            ok = _pull(layout, client, args) if args.cmd == "pull" else _run(layout, client, args)
+        if args.cmd == "run":
+            steps = ("bars", "ca-db", "actions", "hindsight", "reports")
+            ok = all([build_step(layout, step, args) for step in steps]) and ok
+    if not ok:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

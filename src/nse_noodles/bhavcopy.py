@@ -115,14 +115,14 @@ def pull(
             report.skipped_known += 1
             continue
         got = client.get(archive_url(day))
-        if got.status == "ok":
+        if got.status == "ok" and _readable(got.data):
             write_bytes(path, got.data)
             memo.discard("bhavcopy", day)
             report.downloaded += 1
         elif got.status == "not_found":
             memo.add("bhavcopy", day)
             report.not_found.append(day)
-        else:
+        else:  # an error, or a body that is no bhavcopy (a block page): asked again next run
             report.errors.append(day)
     memo.save()
     return report
@@ -205,12 +205,22 @@ def _csv_text(data: bytes) -> str:
         return archive.read(names[0]).decode("utf-8-sig", errors="replace")
 
 
+def _readable(data: bytes) -> bool:
+    try:
+        _csv_text(data)
+    except (ValueError, zipfile.BadZipFile):
+        return False
+    return True
+
+
 def _bar(row: dict[str, str], cols: dict[str, str], day: date, series: str) -> dict | None:
     """The row as a `BAR_SCHEMA` bar, or None when a field is missing or fails `row_ok`."""
     isin = row.get(cols["isin"], "").upper()
     o, h, low, c = (_num(row.get(cols[k])) for k in ("open", "high", "low", "close"))
     prev, value = _num(row.get(cols["prev"])), _num(row.get(cols["value"]))
     vol = _num(row.get(cols["volume"]))
+    if prev is not None and prev <= 0:
+        prev = None  # a listing day can carry PREVCLOSE 0: the bar stands without it
     symbol = row.get(cols["symbol"], "").upper()
     if (
         not ISIN_RE.match(isin)
@@ -271,6 +281,7 @@ class BuildReport:
     rows: int = 0
     already: int = 0
     invalid: int = 0
+    wrong_date: int = 0
     failed: list[str] = field(default_factory=list)
 
 
@@ -289,6 +300,13 @@ def build(layout: Layout, *, rebuild: bool = False) -> BuildReport:
             parsed = parse(day, path.read_bytes())
         except (ValueError, zipfile.BadZipFile) as exc:
             report.failed.append(f"{path.name}: {exc}")
+            continue
+        report.wrong_date += parsed.wrong_date
+        if not parsed.rows:  # a stale or renamed-column file would otherwise fake a session
+            report.failed.append(
+                f"{path.name}: no valid rows (wrong date {parsed.wrong_date}, "
+                f"invalid {parsed.invalid}, other series {parsed.skipped_series})"
+            )
             continue
         frame = pl.DataFrame(parsed.rows, schema=BAR_SCHEMA)
         atomic_write(target, lambda tmp, f=frame: f.write_parquet(tmp))
