@@ -112,6 +112,28 @@ def subject_instrument(subject: str) -> str | None:
     return None
 
 
+def _negative_kind(word: str) -> str:
+    """The instrument a `_NEG` match names."""
+    if "debenture" in word:
+        return "debentures"
+    if "warrant" in word:
+        return "warrants"
+    return "preference"
+
+
+def _bonus_evidence(found: list[dict], ex: date | None) -> list[dict]:
+    """The symbol's dated announcements naming a bonus within the evidence window of `ex`."""
+    if ex is None:
+        return []
+    return [
+        a
+        for a in found
+        if a["day"] is not None
+        and -EVIDENCE_BEFORE <= (a["day"] - ex).days <= EVIDENCE_AFTER
+        and "bonus" in a["text"].lower()
+    ]
+
+
 def classify_bonus(row: dict, announcements: dict[str, list[dict]]) -> tuple[str, str, str, str]:
     """(instrument_class, source, evidence, evidence_url) for a split or bonus row. A split is
     equity by definition. A plain "Bonus x:y" is classified only from announcement evidence
@@ -121,31 +143,15 @@ def classify_bonus(row: dict, announcements: dict[str, list[dict]]) -> tuple[str
         return found, "subject", "", ""
     if "split" in row["subject"].lower() or "bonus" not in row["subject"].lower():
         return "equity", "subject", "", ""
-    ex = row["ex_date"]
-    equity_hit = None
-    for a in announcements.get(row["symbol"], ()):
-        if ex is None or a["day"] is None:
-            continue
-        if not -EVIDENCE_BEFORE <= (a["day"] - ex).days <= EVIDENCE_AFTER:
-            continue
-        text = a["text"]
-        if "bonus" not in text.lower():
-            continue
-        neg = _NEG.search(text)
+    nearby = _bonus_evidence(list(announcements.get(row["symbol"], ())), row["ex_date"])
+    # any non-equity instrument named near the ex-date wins over equity evidence
+    for a in nearby:
+        neg = _NEG.search(a["text"])
         if neg:
-            word = neg[0].lower()
-            kind = (
-                "debentures"
-                if "debenture" in word
-                else "warrants"
-                if "warrant" in word
-                else "preference"
-            )
-            return kind, "announcement", text[:220], a["file"]
-        if equity_hit is None and _EQUITY_EVIDENCE.search(text):
-            equity_hit = (text[:220], a["file"])
-    if equity_hit:
-        return "equity", "announcement", equity_hit[0], equity_hit[1]
+            return _negative_kind(neg[0].lower()), "announcement", a["text"][:220], a["file"]
+    equity = next((a for a in nearby if _EQUITY_EVIDENCE.search(a["text"])), None)
+    if equity:
+        return "equity", "announcement", equity["text"][:220], equity["file"]
     return "unknown", "", "", ""
 
 
@@ -238,93 +244,91 @@ def _legs_text(legs: tuple[parse.Leg, ...] | None) -> str:
     return "" if not legs else ";".join(f"{leg.action_type}={leg.factor}" for leg in legs)
 
 
-def build(layout: Layout) -> dict[str, int]:  # noqa: C901
-    feed = feed_rows(layout)
-    anns = _announcements(layout)
-    meetings = _board_meetings(layout)
-    notices = _notices(anns, meetings)
-    by_symbol: dict[str, list[dict]] = defaultdict(list)
-    for a in anns:
-        by_symbol[a["symbol"]].append(
-            {"day": _an_dt(a["announced_at"]), "text": a["text"], "file": a["file"]}
-        )
+def _split_bonus_row(r: dict, base: dict, evidence: dict[str, list[dict]]) -> dict:
+    legs = parse.split_bonus_legs(r["subject"])
+    cls, src, ev, url = classify_bonus(r, evidence)
+    return {
+        **base,
+        "subject": r["subject"],
+        "legs": _legs_text(legs),
+        "parse_status": "ok" if legs else "unparsed",
+        "instrument_class": cls,
+        "classification_source": src,
+        "evidence": ev,
+        "evidence_url": url,
+    }
 
-    splits, rights, demergers, instruments = [], [], [], []
+
+def _rights_row(r: dict, base: dict) -> dict:
+    terms = parse.rights_terms(r["subject"], r["face_value"])
+    ok = not isinstance(terms, str)
+    return {
+        **base,
+        "subject": r["subject"],
+        "face_value": r["face_value"],
+        "ratio_new": float(terms.new) if ok else None,  # type: ignore[union-attr]
+        "ratio_held": float(terms.held) if ok else None,  # type: ignore[union-attr]
+        "issue_price": float(terms.price) if ok else None,  # type: ignore[union-attr]
+        "parse_status": "ok" if ok else terms,
+    }
+
+
+def _events(
+    feed: list[dict], evidence: dict[str, list[dict]]
+) -> tuple[dict[str, list[dict]], dict[tuple[str, str, date], list[dict]]]:
+    """Each feed row into the event tables its subject names (one row can name several), and
+    the dividend rows grouped by (ISIN, symbol, ex-date)."""
+    tables: dict[str, list[dict]] = {
+        "splits_bonus": [],
+        "rights_issues": [],
+        "demergers": [],
+        "bonus_instruments": [],
+    }
     dividend_groups: dict[tuple[str, str, date], list[dict]] = defaultdict(list)
     for r in feed:
         subject = r["subject"]
         base = {k: r[k] for k in ("symbol", "isin", "series", "ex_date", "record_date", "market")}
         if parse.names_split_or_bonus(subject):
             if parse.non_equity_bonus(subject):
-                instruments.append({**base, "subject": subject, "face_value": r["face_value"]})
-            legs = parse.split_bonus_legs(subject)
-            cls, src, ev, url = classify_bonus(r, by_symbol)
-            splits.append(
-                {
-                    **base,
-                    "subject": subject,
-                    "legs": _legs_text(legs),
-                    "parse_status": "ok" if legs else "unparsed",
-                    "instrument_class": cls,
-                    "classification_source": src,
-                    "evidence": ev,
-                    "evidence_url": url,
-                }
-            )
+                tables["bonus_instruments"].append(
+                    {**base, "subject": subject, "face_value": r["face_value"]}
+                )
+            tables["splits_bonus"].append(_split_bonus_row(r, base, evidence))
         if parse.names_rights(subject):
-            terms = parse.rights_terms(subject, r["face_value"])
-            ok = not isinstance(terms, str)
-            rights.append(
-                {
-                    **base,
-                    "subject": subject,
-                    "face_value": r["face_value"],
-                    "ratio_new": float(terms.new) if ok else None,  # type: ignore[union-attr]
-                    "ratio_held": float(terms.held) if ok else None,  # type: ignore[union-attr]
-                    "issue_price": float(terms.price) if ok else None,  # type: ignore[union-attr]
-                    "parse_status": "ok" if ok else terms,
-                }
-            )
+            tables["rights_issues"].append(_rights_row(r, base))
         if parse.names_demerger(subject):
-            demergers.append({**base, "subject": subject, "company": r["company"]})
+            tables["demergers"].append({**base, "subject": subject, "company": r["company"]})
         if "dividend" in subject.lower() and r["ex_date"] is not None:
             dividend_groups[(r["isin"], r["symbol"], r["ex_date"])].append(r)
+    return tables, dividend_groups
 
-    dividends = []
-    for (isin, symbol, ex), rows in dividend_groups.items():
-        found = parse.combine([x["subject"] for x in rows])
-        if not parse.ordinary_equity(isin) and isin:
-            status = "not_equity_share"
-        elif rows[0]["series"] not in ("EQ", "BE", "BZ", ""):
-            status = "not_equity_series"
-        else:
-            status = found if isinstance(found, str) else "ok"
-        dividends.append(
-            {
-                "isin": isin,
-                "symbol": symbol,
-                "series": rows[0]["series"],
-                "ex_date": ex,
-                "amount": float(parse.total(found)) if not isinstance(found, str) else None,
-                "kinds": "+".join(f"{p.kind} {p.amount}" for p in found)
-                if not isinstance(found, str)
-                else "",
-                "status": status,
-                "subjects": " | ".join(sorted({x["subject"] for x in rows}))[:TEXT_MAX],
-                "market": rows[0]["market"],
-            }
-        )
 
-    tables = {
-        "ca_feed": feed,
-        "splits_bonus": splits,
-        "rights_issues": rights,
-        "demergers": demergers,
-        "bonus_instruments": instruments,
-        "dividends": dividends,
-        "announcements": anns,
-        "board_meetings": meetings,
+def _dividend_status(isin: str, series: str, found: tuple[parse.Payout, ...] | str) -> str:
+    if not parse.ordinary_equity(isin) and isin:
+        return "not_equity_share"
+    if series not in ("EQ", "BE", "BZ", ""):
+        return "not_equity_series"
+    return found if isinstance(found, str) else "ok"
+
+
+def _dividend_row(isin: str, symbol: str, ex: date, rows: list[dict]) -> dict:
+    found = parse.combine([x["subject"] for x in rows])
+    parsed = not isinstance(found, str)
+    return {
+        "isin": isin,
+        "symbol": symbol,
+        "series": rows[0]["series"],
+        "ex_date": ex,
+        "amount": float(parse.total(found)) if parsed else None,  # type: ignore[arg-type]
+        "kinds": "+".join(f"{p.kind} {p.amount}" for p in found) if parsed else "",  # type: ignore[union-attr]
+        "status": _dividend_status(isin, rows[0]["series"], found),
+        "subjects": " | ".join(sorted({x["subject"] for x in rows}))[:TEXT_MAX],
+        "market": rows[0]["market"],
     }
+
+
+def _attach_notices(tables: dict[str, list[dict]], notices: dict[str, list[Notice]]) -> None:
+    """Set `announced_on` / `notice_url` (and a demerger's `notice_source`) on every event row."""
     for name, pattern in NOTICE.items():
         for row in tables[name]:
             filed = notices.get(row["symbol"], [])
@@ -334,6 +338,9 @@ def build(layout: Layout) -> dict[str, int]:  # noqa: C901
             else:
                 day, url = first_notice(filed, row["ex_date"], pattern)
             row["announced_on"], row["notice_url"] = day, url
+
+
+def _write_tables(layout: Layout, tables: dict[str, list[dict]]) -> dict[str, int]:
     counts = {}
     layout.root.mkdir(parents=True, exist_ok=True)
     with duckdb.connect(str(layout.db)) as con:
@@ -346,3 +353,24 @@ def build(layout: Layout) -> dict[str, int]:  # noqa: C901
                 con.unregister("frame")
             counts[name] = len(rows)
     return counts
+
+
+def build(layout: Layout) -> dict[str, int]:
+    feed = feed_rows(layout)
+    anns = _announcements(layout)
+    meetings = _board_meetings(layout)
+    evidence: dict[str, list[dict]] = defaultdict(list)
+    for a in anns:
+        evidence[a["symbol"]].append(
+            {"day": _an_dt(a["announced_at"]), "text": a["text"], "file": a["file"]}
+        )
+    events, dividend_groups = _events(feed, evidence)
+    tables = {
+        "ca_feed": feed,
+        **events,
+        "dividends": [_dividend_row(*key, rows) for key, rows in dividend_groups.items()],
+        "announcements": anns,
+        "board_meetings": meetings,
+    }
+    _attach_notices(tables, _notices(anns, meetings))
+    return _write_tables(layout, tables)

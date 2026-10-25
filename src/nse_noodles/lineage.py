@@ -50,6 +50,7 @@ RESTRUCTURING = re.compile(
     re.IGNORECASE,
 )
 LINKED, REVIEW = "linked", "review"
+_OLD_SYMBOL, _NEW_SYMBOL, _EFFECTIVE = "OLD SYMBOL", "NEW SYMBOL", "EFFECTIVE DATE"  # NSE headers
 
 
 @dataclass(frozen=True)
@@ -116,17 +117,17 @@ def parse_symbol_changes(text: str) -> list[SymbolChange]:
     had a header row in some versions and none in others: a header-less file is read by
     position."""
     rows = _csv(text)
-    if rows and "OLD SYMBOL" not in rows[0] and "SM_KEY_SYMBOL" not in rows[0]:
+    if rows and _OLD_SYMBOL not in rows[0] and "SM_KEY_SYMBOL" not in rows[0]:
         rows = [
-            {"OLD SYMBOL": r[1], "NEW SYMBOL": r[2], "EFFECTIVE DATE": r[3]}
+            {_OLD_SYMBOL: r[1], _NEW_SYMBOL: r[2], _EFFECTIVE: r[3]}
             for r in csv.reader(io.StringIO(text))
             if len(r) >= 4
         ]
     out = []
     for row in rows:
-        old = (row.get("OLD SYMBOL") or row.get("SM_KEY_SYMBOL") or "").upper()
-        new = (row.get("NEW SYMBOL") or row.get("SM_NEW_SYMBOL") or "").upper()
-        day = _nse_date(row.get("EFFECTIVE DATE") or row.get("SM_APPLICABLE_FROM") or "")
+        old = (row.get(_OLD_SYMBOL) or row.get("SM_KEY_SYMBOL") or "").upper()
+        new = (row.get(_NEW_SYMBOL) or row.get("SM_NEW_SYMBOL") or "").upper()
+        day = _nse_date(row.get(_EFFECTIVE) or row.get("SM_APPLICABLE_FROM") or "")
         if old and new and old != new and day is not None:
             out.append(SymbolChange(old, new, day))
     return out
@@ -136,7 +137,7 @@ def parse_name_changes(text: str) -> list[NameChange]:
     out = []
     for row in _csv(text):
         symbol = (row.get("SYMBOL") or row.get("NCH_SYMBOL") or "").upper()
-        day = _nse_date(row.get("EFFECTIVE DATE") or row.get("NCH_DATE") or "")
+        day = _nse_date(row.get(_EFFECTIVE) or row.get("NCH_DATE") or "")
         if symbol and day is not None:
             out.append(NameChange(symbol, day))
     return out
@@ -145,6 +146,25 @@ def parse_name_changes(text: str) -> list[NameChange]:
 def sessions_between(sessions: Sequence[date], first: date, last: date) -> int:
     """Sessions strictly between two days (from the sorted session list)."""
     return max(0, bisect_left(sessions, last) - bisect_right(sessions, first))
+
+
+def _targets(
+    old: Span, by_first: Mapping[str, list[Span]], renamed: Mapping[str, list[SymbolChange]]
+) -> list[tuple[Span, SymbolChange | None]]:
+    """Spans that could continue `old`: those starting under its last symbol, then those
+    starting under a symbol it changed to near the change."""
+    targets: list[tuple[Span, SymbolChange | None]] = [
+        (new, None) for new in by_first.get(old.last_symbol, ())
+    ]
+    for change in renamed.get(old.last_symbol, ()):
+        targets += [
+            (new, change)
+            for new in by_first.get(change.new, ())
+            if old.last_day - SYMBOL_CHANGE_SLACK
+            <= change.effective
+            <= new.first_day + SYMBOL_CHANGE_SLACK
+        ]
+    return targets
 
 
 def candidates(
@@ -159,27 +179,26 @@ def candidates(
         renamed[change.old].append(change)
     out: dict[tuple[str, str], Candidate] = {}
     for old in spans:
-        targets: list[tuple[Span, SymbolChange | None]] = [
-            (new, None) for new in by_first.get(old.last_symbol, ())
-        ]
-        for change in renamed.get(old.last_symbol, ()):
-            targets += [
-                (new, change)
-                for new in by_first.get(change.new, ())
-                if old.last_day - SYMBOL_CHANGE_SLACK
-                <= change.effective
-                <= new.first_day + SYMBOL_CHANGE_SLACK
-            ]
-        for new, change in targets:
+        for new, change in _targets(old, by_first, renamed):
             key = (old.isin, new.isin)
-            if old.isin == new.isin or new.first_day <= old.last_day or key in out:
-                continue
-            gap = sessions_between(sessions, old.last_day, new.first_day)
-            if gap <= REVIEW_GAP_SESSIONS:
-                out[key] = Candidate(
-                    old, new, gap, "same_symbol" if change is None else "symbol_change", change
-                )
+            if key not in out:
+                found = _candidate(old, new, change, sessions)
+                if found:
+                    out[key] = found
     return sorted(out.values(), key=lambda c: (c.new.first_day, c.old.isin, c.new.isin))
+
+
+def _candidate(
+    old: Span, new: Span, change: SymbolChange | None, sessions: Sequence[date]
+) -> Candidate | None:
+    """`new` as a successor of `old`: another ISIN starting after `old` ends, within
+    REVIEW_GAP_SESSIONS."""
+    if old.isin == new.isin or new.first_day <= old.last_day:
+        return None
+    gap = sessions_between(sessions, old.last_day, new.first_day)
+    if gap > REVIEW_GAP_SESSIONS:
+        return None
+    return Candidate(old, new, gap, "same_symbol" if change is None else "symbol_change", change)
 
 
 def _price_actions(actions: Iterable[Action]) -> tuple[dict[tuple[date, str], Action], bool]:
@@ -200,7 +219,55 @@ def _factor(chosen: Mapping[tuple[date, str], Action], after: date, through: dat
     return f
 
 
-def decide(  # noqa: C901
+def _edge_move(old: Span, new: Span, chosen: Mapping[tuple[date, str], Action]) -> str | None:
+    """The first session move beyond JUMP_TOL across the two spans' edge bars, if any."""
+    for before, after in itertools.pairwise([*old.tail, *new.head]):
+        base = before.close * _factor(chosen, before.day, after.day)
+        if base > 0 and abs(after.open / base - 1) > JUMP_TOL:
+            return f"{before.day} -> {after.day} x{after.open / base:.4f}"
+    return None
+
+
+def _price_break(
+    old: Span,
+    new: Span,
+    chosen: Mapping[tuple[date, str], Action],
+    expected: float,
+    ev: dict[str, Any],
+) -> str | None:
+    """The first price rule the succession breaks (adding what it measured to `ev`), or None."""
+    if old.last_close <= 0 or expected <= 0:
+        return "price_jump"
+    if new.first_prev_close is None:
+        return "no_prev_close"
+    raw_gap = new.first_prev_close / old.last_close - 1
+    adj_gap = new.first_prev_close / expected - 1
+    if min(abs(raw_gap), abs(adj_gap)) > PREV_CLOSE_TOL:
+        return "prev_close_mismatch"
+    open_gap = new.first_open / expected - 1
+    ev["open_ratio"] = round(open_gap + 1, 6)
+    if abs(open_gap) > OPEN_TOL:
+        return "price_jump"
+    edge = _edge_move(old, new, chosen)
+    if edge:
+        ev["edge_move"] = edge
+        return "price_jump"
+    return None
+
+
+def _link_reason(c: Candidate, actions: Sequence[Action], renamed: bool) -> str:
+    old, new = c.old, c.new
+    near = [a for a in actions if old.last_day - SYMBOL_CHANGE_SLACK <= a.ex_date <= new.first_day]
+    if any(a.action_type == "split" for a in near):
+        return "face_value_change"
+    if old.last_symbol != new.first_symbol:
+        return "symbol_change"
+    if renamed:
+        return "name_change"
+    return "isin_reissue"
+
+
+def decide(
     c: Candidate,
     actions: Sequence[Action],
     names: Iterable[NameChange] = (),
@@ -210,7 +277,6 @@ def decide(  # noqa: C901
     old, new = c.old, c.new
     chosen, conflict = _price_actions(actions)
     factor = _factor(chosen, old.last_day, new.first_day)
-    expected = old.last_close * factor
     ev: dict[str, Any] = {
         "old_symbol": old.last_symbol,
         "new_symbol": new.first_symbol,
@@ -227,10 +293,8 @@ def decide(  # noqa: C901
     restructuring = sorted(
         {a.text for a in actions if lo <= a.ex_date <= hi and RESTRUCTURING.search(a.text)}
     )
-    renamed = sorted(
-        n.effective.isoformat()
-        for n in names
-        if n.symbol in (old.last_symbol, new.first_symbol) and lo <= n.effective <= hi
+    renamed = any(
+        n.symbol in (old.last_symbol, new.first_symbol) and lo <= n.effective <= hi for n in names
     )
 
     def verdict(status: str, reason: str) -> Decision:
@@ -245,32 +309,10 @@ def decide(  # noqa: C901
         return verdict(REVIEW, "restructuring")
     if conflict:
         return verdict(REVIEW, "factor_conflict")
-    if old.last_close <= 0 or expected <= 0:
-        return verdict(REVIEW, "price_jump")
-    if new.first_prev_close is None:
-        return verdict(REVIEW, "no_prev_close")
-    raw_gap = new.first_prev_close / old.last_close - 1
-    adj_gap = new.first_prev_close / expected - 1
-    if min(abs(raw_gap), abs(adj_gap)) > PREV_CLOSE_TOL:
-        return verdict(REVIEW, "prev_close_mismatch")
-    open_gap = new.first_open / expected - 1
-    ev["open_ratio"] = round(open_gap + 1, 6)
-    if abs(open_gap) > OPEN_TOL:
-        return verdict(REVIEW, "price_jump")
-    bars = [*old.tail, *new.head]
-    for before, after in itertools.pairwise(bars):
-        base = before.close * _factor(chosen, before.day, after.day)
-        if base > 0 and abs(after.open / base - 1) > JUMP_TOL:
-            ev["edge_move"] = f"{before.day} -> {after.day} x{after.open / base:.4f}"
-            return verdict(REVIEW, "price_jump")
-    near = [a for a in actions if old.last_day - SYMBOL_CHANGE_SLACK <= a.ex_date <= new.first_day]
-    if any(a.action_type == "split" for a in near):
-        return verdict(LINKED, "face_value_change")
-    if old.last_symbol != new.first_symbol:
-        return verdict(LINKED, "symbol_change")
-    if renamed:
-        return verdict(LINKED, "name_change")
-    return verdict(LINKED, "isin_reissue")
+    broken = _price_break(old, new, chosen, old.last_close * factor, ev)
+    if broken:
+        return verdict(REVIEW, broken)
+    return verdict(LINKED, _link_reason(c, actions, renamed))
 
 
 def decide_all(

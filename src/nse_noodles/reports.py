@@ -120,6 +120,41 @@ def _has(con: duckdb.DuckDBPyConnection, table: str) -> bool:
     return bool(row and row[0])
 
 
+COVERAGE_LISTS = (
+    "holiday",
+    "gap",
+    "unaccounted",
+    "on_listed_holiday",
+    "weekend_session",
+    "index_missing",
+)
+
+
+def _day_status(day: date, have: set[date], listed: set[date], memo: NotFoundMemo) -> str | None:
+    """The coverage list a calendar day belongs on, or None for an ordinary day."""
+    if day.weekday() >= 5:
+        return "weekend_session" if day in have else None
+    if day in have:
+        return "on_listed_holiday" if day in listed else None
+    if memo.has("bhavcopy", day):
+        return "holiday" if day in listed else "gap"
+    if not (date(2024, 7, 5) < day < date(2024, 7, 8)):
+        return "unaccounted"
+    return None
+
+
+def _index_missing(layout: Layout, sessions: list[date]) -> list[str]:
+    """Sessions from the first index day on that have no index file."""
+    index_days = sorted(
+        date.fromisoformat(p.stem.removeprefix("date="))
+        for p in layout.index.glob("date=*.parquet")
+    )
+    if not index_days:
+        return []
+    have_index = set(index_days)
+    return [d.isoformat() for d in sessions if d >= index_days[0] and d not in have_index]
+
+
 def coverage(layout: Layout, holidays_file: str | None = None) -> dict[str, list[str]]:
     sessions = bar_sessions(layout)
     if not sessions:
@@ -127,39 +162,14 @@ def coverage(layout: Layout, holidays_file: str | None = None) -> dict[str, list
     memo = NotFoundMemo(layout.raw / "not_found.json")
     listed = exits.listed_holidays(layout, holidays_file)
     have = set(sessions)
-    out: dict[str, list[str]] = {
-        k: []
-        for k in (
-            "holiday",
-            "gap",
-            "unaccounted",
-            "on_listed_holiday",
-            "weekend_session",
-            "index_missing",
-        )
-    }
+    out: dict[str, list[str]] = {k: [] for k in COVERAGE_LISTS}
     day = sessions[0]
     while day <= sessions[-1]:
-        if day.weekday() >= 5:
-            if day in have:
-                out["weekend_session"].append(day.isoformat())
-        elif day in have:
-            if day in listed:
-                out["on_listed_holiday"].append(day.isoformat())
-        elif memo.has("bhavcopy", day):
-            out["holiday" if day in listed else "gap"].append(day.isoformat())
-        elif not (date(2024, 7, 5) < day < date(2024, 7, 8)):
-            out["unaccounted"].append(day.isoformat())
+        status = _day_status(day, have, listed, memo)
+        if status:
+            out[status].append(day.isoformat())
         day += timedelta(days=1)
-    index_days = sorted(
-        date.fromisoformat(p.stem.removeprefix("date="))
-        for p in layout.index.glob("date=*.parquet")
-    )
-    if index_days:
-        have_index = set(index_days)
-        out["index_missing"] = [
-            d.isoformat() for d in sessions if d >= index_days[0] and d not in have_index
-        ]
+    out["index_missing"] = _index_missing(layout, sessions)
     return out
 
 

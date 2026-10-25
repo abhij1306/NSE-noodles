@@ -181,37 +181,53 @@ def read_corrections(path: Path) -> list[Correction]:
         if parts[0] == "op":
             continue
         parts += [""] * (len(CORRECTION_COLUMNS) - len(parts))
-        op, isin, ex, kind, value, new_ex, note, known = parts[:8]
-        ex_date = parse.nse_date(ex)
-        f = number(value)
-        bad = (
-            op not in CORRECTION_OPS
-            or kind not in CORRECTION_TYPES
-            or ex_date is None
-            or not parse.ISIN_RE.match(isin.upper())
-            or not note
-            or (op in ("add", "replace") and (f is None or f <= 0))
-            or (op in ("add", "replace") and kind not in ("dividend", "split") and not f < 1)  # type: ignore[operator]
-            or (op in ("add", "replace") and kind == "split" and f == 1)
-            or (op == "move" and parse.nse_date(new_ex) is None)
-            or (bool(known) and parse.nse_date(known) is None)
-        )
-        if bad:
+        found = _correction(n, parts)
+        if found is None:
             raise CurationError(f"{path.name}:{n}: bad correction line")
-        out.append(
-            Correction(
-                n,
-                op,
-                isin.upper(),
-                ex_date,  # type: ignore[arg-type]
-                kind,
-                f,
-                parse.nse_date(new_ex),
-                note,
-                parse.nse_date(known) if known else None,
-            )
-        )
+        out.append(found)
     return out
+
+
+def _value_ok(op: str, kind: str, f: Fraction | None) -> bool:
+    """An add or replace carries a positive value: any dividend, a split other than 1 (above 1
+    is a consolidation), any other factor below 1."""
+    if op not in ("add", "replace"):
+        return True
+    if f is None or f <= 0:
+        return False
+    if kind == "split":
+        return f != 1
+    return kind == "dividend" or f < 1
+
+
+def _correction(n: int, parts: list[str]) -> Correction | None:
+    """Line `n`'s cells as a Correction, or None when any cell is invalid."""
+    op, isin, ex, kind, value, new_ex, note, known = parts[:8]
+    ex_date = parse.nse_date(ex)
+    f = number(value)
+    valid = (
+        op in CORRECTION_OPS
+        and kind in CORRECTION_TYPES
+        and ex_date is not None
+        and parse.ISIN_RE.match(isin.upper())
+        and note
+        and _value_ok(op, kind, f)
+        and (op != "move" or parse.nse_date(new_ex) is not None)
+        and (not known or parse.nse_date(known) is not None)
+    )
+    if not valid:
+        return None
+    return Correction(
+        n,
+        op,
+        isin.upper(),
+        ex_date,  # type: ignore[arg-type]
+        kind,
+        f,
+        parse.nse_date(new_ex),
+        note,
+        parse.nse_date(known) if known else None,
+    )
 
 
 def read_holidays(path: Path) -> set[date]:
