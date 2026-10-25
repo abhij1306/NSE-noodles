@@ -54,7 +54,8 @@ def test_a_split_the_open_confirms_is_accepted_from_the_ex_date_open():
     assert _decided(got) == [("split", 0.5, "gate_confirmed", "ex_open")]
     assert got[0]["available_at"] == datetime(2026, 9, 14, 10)
     assert got[0]["basis"] == "stated_ratio"
-    assert out.review == [] and out.skipped == []
+    assert out.review == []
+    assert out.skipped == []
 
 
 def test_a_version_is_never_available_before_the_notice_it_reads():
@@ -337,7 +338,8 @@ def test_proposals_read_the_feed_and_attach_research():
         ("dividends", "unparsed", None, (), 0, "nse_feed"),
         ("rights_issues", "", None, (), 1, "research"),
     ]
-    assert got[0].hint == "class equity (no evidence)" and got[0].announced_on == date(2026, 8, 20)
+    assert got[0].hint == "class equity (no evidence)"
+    assert got[0].announced_on == date(2026, 8, 20)
     assert actions.proposals(con, [wrong])[2].reason == "research_says_row_wrong"
 
 

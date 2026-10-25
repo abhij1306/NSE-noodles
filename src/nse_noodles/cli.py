@@ -252,9 +252,9 @@ def run(argv: list[str]) -> int:
     else:
         with NseClient(interval=args.interval) as client:
             ok = _pull(layout, client, args) if args.cmd == "pull" else _run(layout, client, args)
-        if args.cmd == "run":  # every step runs, even after one fails
-            built = [build_step(layout, step, args) for step in BUILD_STEPS]
-            ok = ok and all(built)
+        if args.cmd == "run":
+            for step in BUILD_STEPS:  # every step runs, even after one fails
+                ok = build_step(layout, step, args) and ok
     return 0 if ok else 1
 
 

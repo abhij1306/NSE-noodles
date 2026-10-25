@@ -1180,32 +1180,32 @@ def _group(
     return groups, later
 
 
-def _event_key(p: Proposal, chain: str, series: list[Bar]) -> tuple:
+def _event_key(p: Proposal, chain: str, series: list[Bar]) -> tuple[str, str, date, date]:
     """One event per chain and ex-date; a demerger's per session pair, so two feed rows dated
-    either side of a holiday are one event."""
+    either side of a holiday are one event. (A pair's two days always differ, so the ex-date
+    twice never stands for one.)"""
     pair = around(series, p.ex_date) if p.table == "demergers" else "cash"
     if isinstance(pair, str):
-        return (chain, p.table, p.ex_date)
+        return (chain, p.table, p.ex_date, p.ex_date)
     return (chain, p.table, pair[0].day, pair[1].day)
 
 
 def _same_day(accepted: list[dict], chain: str, series: list[Bar], ex: date) -> Fraction:
     """The product of the split, bonus and rights factors already accepted on the chain for a
     demerger's session pair."""
+    product = Fraction(1)
     pair = around(series, ex)
     if isinstance(pair, str):
-        return Fraction(1)
-    return math.prod(
-        (
-            fr(a["value"])
-            for a in accepted
-            if a["chain_isin"] == chain
+        return product
+    for a in accepted:
+        if (
+            a["chain_isin"] == chain
             and a["status"] == ACCEPTED
             and a["action_type"] in PRICE_TYPES
             and pair[0].day < a["ex_date"] <= pair[1].day
-        ),
-        start=Fraction(1),
-    )
+        ):
+            product *= fr(a["value"])
+    return product
 
 
 class _CashDays:
