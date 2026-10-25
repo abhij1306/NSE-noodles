@@ -340,7 +340,10 @@ def apply_overrides(
     decisions: Iterable[Decision], overrides: Mapping[tuple[str, str], str]
 ) -> list[Decision]:
     """The owner's verdicts (old, new) -> link | unlink over the rules'. A rules link sharing a
-    side with an owner link becomes a review case, so a chain never forks."""
+    side with an owner link becomes a review case, so a chain never forks. An owner link on a
+    pair the rules never found cannot be applied (nothing dates it): it is listed for review as
+    `override_unused`."""
+    decisions = list(decisions)
     owned = [pair for pair, v in overrides.items() if v == "link"]
     olds, news = {o for o, _ in owned}, {n for _, n in owned}
     out = []
@@ -361,6 +364,28 @@ def apply_overrides(
                 status=status,
                 reason=reason,
                 evidence={**d.evidence, "rules": f"{d.status}:{d.reason}"},
+            )
+        )
+    return out + _unused_links(decisions, owned)
+
+
+def _unused_links(decisions: list[Decision], owned: list[tuple[str, str]]) -> list[Decision]:
+    """Review rows for owner links matching no found succession, dated by a decision sharing a
+    side (the one it displaces), else date.min."""
+    found = {(d.old_isin, d.new_isin) for d in decisions}
+    out = []
+    for old, new in owned:
+        if (old, new) in found:
+            continue
+        near = [d.effective for d in decisions if d.old_isin == old or d.new_isin == new]
+        out.append(
+            Decision(
+                old,
+                new,
+                min(near, default=date.min),
+                REVIEW,
+                "override_unused",
+                {"override": "link"},
             )
         )
     return out

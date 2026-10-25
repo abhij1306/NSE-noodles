@@ -2,7 +2,38 @@ from datetime import date, timedelta
 
 from nse_noodles import lineage
 from nse_noodles.bars import Bar, Span
-from nse_noodles.lineage import Action, Candidate, NameChange, SymbolChange
+from nse_noodles.lineage import Action, Candidate, Decision, NameChange, SymbolChange
+
+
+def _verdicts(decisions):
+    return [(d.old_isin, d.new_isin, d.effective, d.status, d.reason) for d in decisions]
+
+
+def test_unused_owner_link_is_reported_not_silently_ignored():
+    """An owner link on a pair the rules never found displaces the rules link sharing its old
+    ISIN; the unused override must show up for review, not leave the chain unlinked unseen."""
+    rules = [Decision("A", "B", date(2026, 6, 15), "linked", "isin_reissue")]
+    out = lineage.apply_overrides(rules, {("A", "C"): "link", ("X", "Y"): "link"})
+    assert _verdicts(out) == [
+        ("A", "B", date(2026, 6, 15), "review", "owner_displaced"),
+        ("A", "C", date(2026, 6, 15), "review", "override_unused"),
+        ("X", "Y", date.min, "review", "override_unused"),
+    ]
+    assert out[1].evidence == {"override": "link"}
+
+
+def test_used_overrides():
+    rules = [
+        Decision("A", "B", date(2026, 6, 15), "review", "price_jump"),
+        Decision("C", "D", date(2026, 6, 16), "linked", "isin_reissue"),
+    ]
+    out = lineage.apply_overrides(rules, {("A", "B"): "link", ("C", "D"): "unlink"})
+    assert _verdicts(out) == [
+        ("A", "B", date(2026, 6, 15), "linked", "owner_link"),
+        ("C", "D", date(2026, 6, 16), "review", "owner_unlink"),
+    ]
+    assert out[0].evidence == {"rules": "review:price_jump"}
+
 
 OLD, NEW = "INE001A01011", "INE001A01029"
 MON = date(2026, 6, 1)
