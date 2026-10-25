@@ -394,3 +394,35 @@ def test_build_reads_a_database_without_every_table(tmp_path):
     layout, curation = _archive(tmp_path, prices, {"splits_bonus": [_split_row()]})
     assert actions.build(layout, curation, NOW)["events"] == {"split": 1}
     assert _built(layout, "actions", "ex_date, value") == [(EX, 0.5)]
+
+
+def _demerger_row(**kw) -> dict:
+    return _feed("m", subject="Demerger", **kw)
+
+
+def test_a_demerger_on_a_split_session_is_the_gap_left_by_the_split(tmp_path):
+    # 100 -> 44: the 1:2 split explains 0.5 of the gap, the demerger the remaining 0.88
+    prices = {("INE000A01011", "AAA"): _bars("INE000A01011", {FIRST: 100.0, EX: 44.0}, FIRST, LAST)}
+    tables = {"splits_bonus": [_split_row()], "demergers": [_demerger_row()]}
+    layout, curation = _archive(tmp_path, prices, tables)
+    actions.build(layout, curation, NOW)
+    assert _built(layout, "actions", "ex_date, action_type, value, method") == [
+        (EX, "demerger", 0.88, "market_gap"),
+        (EX, "split", 0.5, "gate_confirmed"),
+    ]
+
+
+def test_two_demerger_rows_on_one_session_pair_are_one_event(tmp_path):
+    # Monday DEMERGER is a holiday: rows dated Monday and Tuesday both read Friday -> Tuesday
+    holiday = [b for b in PRICES[("INE000B01011", "BBB")] if b.day != DEMERGER]
+    tuesday = DEMERGER + timedelta(days=1)
+    rows = [
+        _demerger_row(isin="INE000B01011", symbol="BBB", ex_date=d) for d in (DEMERGER, tuesday)
+    ]
+    layout, curation = _archive(tmp_path, {("INE000B01011", "BBB"): holiday}, {"demergers": rows})
+    summary = actions.build(layout, curation, NOW)
+    assert _built(layout, "actions", "ex_date, action_type, value") == [
+        (DEMERGER, "demerger", 0.75)
+    ]
+    assert summary["skipped"] == {"duplicate_event": 1}
+    assert _built(layout, "skipped", "ex_date, reason") == [(tuesday, "duplicate_event")]

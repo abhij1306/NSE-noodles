@@ -69,6 +69,7 @@ DISPUTE_DAYS = 60
 # feed dividend statuses that are not a cash dividend on an equity share: skipped, not reviewed
 SKIP_DIVIDEND = ("not_equity_share", "not_equity_series", "preference_dividend", "no_dividend")
 SKIP = "skip:"  # a proposal reason with this prefix is skipped, never reviewed
+PRICE_TYPES = ("split", "bonus", "rights")  # the factors gated together per session pair
 BONUS_BEFORE, BONUS_AFTER = 7, 3  # NSE's ex-date vs a researched bonus-debenture date
 # a bonus of debentures / preference shares to some holders only is no per-share distribution
 SOME_HOLDERS = ("non-promoter", "non promoter", "public only", "promoters excluded")
@@ -1104,16 +1105,29 @@ def _group(
     return groups, later
 
 
+def _event_key(p: Proposal, chain: str, series: list[Bar]) -> tuple:
+    """One event per chain and ex-date; a demerger's per session pair, so two feed rows dated
+    either side of a holiday are one event."""
+    pair = around(series, p.ex_date) if p.table == "demergers" else "cash"
+    if isinstance(pair, str):
+        return (chain, p.table, p.ex_date)
+    return (chain, p.table, pair[0].day, pair[1].day)
+
+
 def _same_day(accepted: list[dict], chain: str, series: list[Bar], ex: date) -> Fraction:
-    """The product of the factors already accepted on the chain for a demerger's session pair."""
+    """The product of the split, bonus and rights factors already accepted on the chain for a
+    demerger's session pair."""
     pair = around(series, ex)
     if isinstance(pair, str):
         return Fraction(1)
     return math.prod(
         (
-            fr(a["factor"])
+            fr(a["value"])
             for a in accepted
-            if a["chain_isin"] == chain and pair[0].day < a["ex_date"] <= pair[1].day
+            if a["chain_isin"] == chain
+            and a["status"] == ACCEPTED
+            and a["action_type"] in PRICE_TYPES
+            and pair[0].day < a["ex_date"] <= pair[1].day
         ),
         start=Fraction(1),
     )
@@ -1146,12 +1160,14 @@ def _decide_events(
     out: Outcome,
 ) -> None:
     """Demergers, then cash (one row per chain and ex-date), onto `out`."""
-    done: set[tuple[str, date, str]] = set()
+    done: set[tuple] = set()
     cash: dict[tuple[str, date], dict] = {}
     for p, chain in sorted(later, key=lambda x: (x[0].table, x[0].ex_date)):
-        if (chain, p.ex_date, p.table) in done:
+        key = _event_key(p, chain, series[chain])
+        if key in done:
+            out.skipped.append(_row(p, "duplicate_event"))
             continue
-        done.add((chain, p.ex_date, p.table))
+        done.add(key)
         if p.table == "demergers":
             same_day = _same_day(out.accepted, chain, series[chain], p.ex_date)
             out.accepted += decide_demerger(
