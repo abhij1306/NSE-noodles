@@ -238,7 +238,7 @@ def _legs_text(legs: tuple[parse.Leg, ...] | None) -> str:
     return "" if not legs else ";".join(f"{leg.action_type}={leg.factor}" for leg in legs)
 
 
-def build(layout: Layout) -> dict[str, int]:
+def build(layout: Layout) -> dict[str, int]:  # noqa: C901
     feed = feed_rows(layout)
     anns = _announcements(layout)
     meetings = _board_meetings(layout)

@@ -199,7 +199,7 @@ def _noticed(p: Proposal, r: dict) -> Proposal:
     return p
 
 
-def proposals(con: duckdb.DuckDBPyConnection, research: Sequence[ResearchRow]) -> list[Proposal]:
+def proposals(con: duckdb.DuckDBPyConnection, research: Sequence[ResearchRow]) -> list[Proposal]:  # noqa: C901
     out: list[Proposal] = []
     for r in _rows(con, "splits_bonus"):
         if r["ex_date"] is None:
@@ -401,7 +401,7 @@ def _rights_terms(p: Proposal) -> parse.RightsTerms | str:
     return p.rights if p.rights is not None else (p.reason or "unparsed")
 
 
-def decide_price_group(
+def decide_price_group(  # noqa: C901
     chain: str, before: Bar, on: Bar, group: list[Proposal], out: Outcome
 ) -> list[dict]:
     """Gate the product of every split/bonus/rights factor of one chain and session pair."""
@@ -490,7 +490,7 @@ def _dates_disputed(p: Proposal) -> bool:
     return False
 
 
-def decide_demerger(
+def decide_demerger(  # noqa: C901
     chain: str,
     p: Proposal,
     series: list[Bar],
@@ -675,7 +675,7 @@ def decide_cash(chain: str, p: Proposal, series: list[Bar], out: Outcome) -> dic
     )
 
 
-def apply_corrections(
+def apply_corrections(  # noqa: C901
     found: list[dict],
     corrections: Sequence[Correction],
     chains: Chains,
@@ -834,7 +834,7 @@ LINEAGE_SCHEMA = {
 }
 
 
-def build(layout: Layout, curation: Path, now: datetime | None = None) -> dict[str, Any]:
+def build(layout: Layout, curation: Path, now: datetime | None = None) -> dict[str, Any]:  # noqa: C901
     all_spans = spans(layout)
     index = indices.levels(layout, factors.NEUTRAL_INDEX)
     sessions = bar_sessions(layout)

@@ -343,7 +343,7 @@ def total(parts: tuple[Payout, ...] | list[Payout]) -> Decimal:
     return sum((p.amount for p in parts), Decimal(0))
 
 
-def payouts(text: str) -> tuple[Payout, ...] | str:
+def payouts(text: str) -> tuple[Payout, ...] | str:  # noqa: C901
     """The cash dividends a purpose names ("Interim Dividend - Rs 5 Per Share / Special
     Dividend - Rs 10 Per Share"), or why none can be trusted: `no_dividend`,
     `preference_dividend`, `percent_of_face_value`, `several_amounts`, `no_amount`,
