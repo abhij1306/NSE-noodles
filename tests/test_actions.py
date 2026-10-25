@@ -384,9 +384,8 @@ NOW = datetime(2026, 11, 10, 18)
 
 
 def _split_row(**kw) -> dict:
-    return _feed(
-        "s", subject="Face Value Split", **SPLIT, parse_status="ok", legs="split=1/2", **kw
-    )
+    split = {"subject": "Face Value Split", **SPLIT, "parse_status": "ok", "legs": "split=1/2"}
+    return _feed("s", **(split | kw))
 
 
 def test_build_reads_a_database_without_every_table(tmp_path):
@@ -426,3 +425,17 @@ def test_two_demerger_rows_on_one_session_pair_are_one_event(tmp_path):
     ]
     assert summary["skipped"] == {"duplicate_event": 1}
     assert _built(layout, "skipped", "ex_date, reason") == [(tuesday, "duplicate_event")]
+
+
+A_ONLY = {("INE000A01011", "AAA"): PRICES[("INE000A01011", "AAA")]}
+A_SPLIT_RESEARCH = {"table": "split_bonus", "symbol": "AAA", "isin": "INE000A01011",
+                    "ex_date": str(EX), "leg_type": "split", "resulting_symbol": "",
+                    "resulting_isin": "", "ratio_a": "1", "ratio_b": "2"}  # fmt: skip
+
+
+def test_an_unparsed_split_with_research_still_goes_to_review(tmp_path):
+    unparsed = _split_row(parse_status="unparsed", legs="")
+    research = [_research_row(**A_SPLIT_RESEARCH)]
+    layout, curation = _archive(tmp_path, A_ONLY, {"splits_bonus": [unparsed]}, research)
+    summary = actions.build(layout, curation, NOW)
+    assert (summary["events"], summary["review"]) == ({}, {"unparsed": 1})

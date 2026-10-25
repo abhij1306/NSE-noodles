@@ -419,8 +419,10 @@ PriceLeg = tuple[Proposal, str, Fraction]  # (proposal, action type, factor)
 
 def _price_factors(p: Proposal, before: Bar, on: Bar, out: Outcome) -> list[tuple[str, Fraction]]:
     """A proposal's (type, factor) legs: its stated ones, or its rights priced as TERP / previous
-    close. Empty when a rights issue is reviewed or skipped instead."""
+    close. Empty when the proposal is reviewed or skipped instead."""
     if p.table != "rights_issues":
+        if not p.legs:  # research about a row whose text did not parse states no factor
+            out.review.append(_row(p, p.reason or "unparsed", _bar_evidence(before, on)))
         return [(leg.action_type, leg.factor) for leg in p.legs]
     terms = _rights_terms(p)
     if isinstance(terms, str):
