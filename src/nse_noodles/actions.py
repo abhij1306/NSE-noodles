@@ -370,6 +370,9 @@ def _accept(chain: str, before: Bar, p: Proposal, evidence: dict, v: Version) ->
         latest(*(end_of(r.source_date) for r in v.terms)) if v.terms else end_of(p.announced_on)
     )
     researched = bool(v.terms) or p.source == "research"  # the value read research terms
+    available, basis = v.known
+    if available is not None and published is not None and published > available:
+        available, basis = published, "source_published"  # never before the source it reads
     return {
         "chain_isin": chain,
         "isin": before.isin,
@@ -390,8 +393,8 @@ def _accept(chain: str, before: Bar, p: Proposal, evidence: dict, v: Version) ->
         "announced_on": p.announced_on,
         "notice_url": p.notice_url,
         "source_published_at": published,
-        "available_at": v.known[0],
-        "available_basis": v.known[1],
+        "available_at": available,
+        "available_basis": basis,
     }
 
 

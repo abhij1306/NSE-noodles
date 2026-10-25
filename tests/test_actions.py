@@ -57,6 +57,18 @@ def test_a_split_the_open_confirms_is_accepted_from_the_ex_date_open():
     assert out.review == [] and out.skipped == []
 
 
+def test_a_version_is_never_available_before_the_notice_it_reads():
+    # NSE's notice dated the ex-date itself counts from the end of that day, after the open
+    notified = _split()
+    notified.announced_on = EX
+    got = actions.decide_price_group("C", BEFORE, _on(50.5), [notified], Outcome())
+    assert (got[0]["source_published_at"], got[0]["available_at"], got[0]["available_basis"]) == (
+        datetime(2026, 9, 14, 23, 59, 59),
+        datetime(2026, 9, 14, 23, 59, 59),
+        "source_published",
+    )
+
+
 def test_a_split_the_open_contradicts_goes_to_review():
     out = Outcome()
     assert actions.decide_price_group("C", BEFORE, _on(99.0), [_split()], out) == []
