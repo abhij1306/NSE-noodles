@@ -500,3 +500,24 @@ def test_two_new_listings_under_the_resulting_symbol_go_to_review(tmp_path):
     layout, curation = _archive(tmp_path, prices, B_DEMERGER, research)
     summary = actions.build(layout, curation, NOW)
     assert (summary["events"], summary["review"]) == ({}, {"resulting_company_ambiguous": 1})
+
+
+RIGHTS = {"rights_issues": [_feed("r", subject="Rights 1:1 @ 40", face_value=10.0,
+                                  parse_status="ok", ratio_new=1.0, ratio_held=1.0,
+                                  issue_price=40.0)]}  # fmt: skip
+A_RIGHTS_RESEARCH = {"table": "rights", "symbol": "AAA", "isin": "INE000A01011",
+                     "leg_type": "rights", "resulting_symbol": "", "resulting_isin": "",
+                     "issue_price": "40", "ex_date": str(EX + timedelta(days=10))}  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("tables", "research"),
+    [
+        (B_DEMERGER, _research_row(ex_date=str(DEMERGER + timedelta(days=14)))),
+        (RIGHTS, _research_row(**A_RIGHTS_RESEARCH)),
+    ],
+)
+def test_research_dating_the_event_otherwise_sends_it_to_review(tmp_path, tables, research):
+    layout, curation = _archive(tmp_path, PRICES, tables, [research])
+    summary = actions.build(layout, curation, NOW)
+    assert (summary["events"], summary["review"]) == ({}, {"date_disputed": 1})

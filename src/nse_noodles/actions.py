@@ -203,9 +203,12 @@ def _matches(r: ResearchRow, p: Proposal) -> bool:
     same = (r.isin and r.isin == p.isin) or (r.symbol and r.symbol == p.symbol)
     if not same or r.ex_date is None:
         return False
+    days = (p.ex_date - r.ex_date).days
     if r.table == "bonus_instrument":
-        return -BONUS_BEFORE <= (p.ex_date - r.ex_date).days <= BONUS_AFTER
-    return r.ex_date == p.ex_date
+        return -BONUS_BEFORE <= days <= BONUS_AFTER
+    if r.table in ("demerger", "rights"):  # a date it disputes sends the event to review
+        return abs(days) <= DISPUTE_DAYS
+    return days == 0
 
 
 def _noticed(p: Proposal, r: dict) -> Proposal:
@@ -420,6 +423,8 @@ def _priced_research(p: Proposal) -> list[ResearchRow]:
 def _rights_terms(p: Proposal) -> parse.RightsTerms | str:
     """The terms to price: the research's when it is confident and complete, else NSE's."""
     best = _priced_research(p)
+    if _dates_disputed(p):
+        return "date_disputed"
     if [r for r in p.research if r.non_equity]:
         return "non_simple_research"
     if best:
