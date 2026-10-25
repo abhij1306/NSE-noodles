@@ -14,6 +14,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import math
 import re
 import zipfile
 from collections.abc import Iterable
@@ -164,7 +165,7 @@ def _num(raw: str | None) -> float | None:
         value = float((raw or "").replace(",", "").strip())
     except ValueError:
         return None
-    return value if value == value and abs(value) != float("inf") else None
+    return value if math.isfinite(value) else None
 
 
 def series_rank(series: str) -> tuple[int, str]:
@@ -196,19 +197,43 @@ class ParsedDay:
     other_series: int = 0  # a second series of an ISIN that traded under a better-ranked one
 
 
-def parse(day: date, data: bytes) -> ParsedDay:
-    """One zip as rows of `BAR_SCHEMA`, one per ISIN (the best-ranked series)."""
-    fmt = format_for(day)
-    cols, parse_date = (_OLD, _old_date) if fmt == "old" else (_UDIFF, _iso_date)
+def _csv_text(data: bytes) -> str:
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         names = [n for n in archive.namelist() if n.lower().endswith(".csv")]
         if len(names) != 1:
             raise ValueError("bhavcopy archive must hold exactly one CSV")
-        text = archive.read(names[0]).decode("utf-8-sig", errors="replace")
-    reader = csv.DictReader(io.StringIO(text))
+        return archive.read(names[0]).decode("utf-8-sig", errors="replace")
+
+
+def _bar(row: dict[str, str], cols: dict[str, str], day: date, series: str) -> dict | None:
+    """The row as a `BAR_SCHEMA` bar, or None when a field is missing or fails `row_ok`."""
+    isin = row.get(cols["isin"], "").upper()
+    o, h, low, c = (_num(row.get(cols[k])) for k in ("open", "high", "low", "close"))
+    prev, value = _num(row.get(cols["prev"])), _num(row.get(cols["value"]))
+    vol = _num(row.get(cols["volume"]))
+    symbol = row.get(cols["symbol"], "").upper()
+    if (
+        not ISIN_RE.match(isin)
+        or not symbol
+        or None in (o, h, low, c, vol)
+        or vol != int(vol)  # type: ignore[arg-type]
+        or not row_ok(o, h, low, c, prev, int(vol))  # type: ignore[arg-type]
+    ):
+        return None
+    return {
+        "date": day, "isin": isin, "symbol": symbol, "series": series, "open": o,
+        "high": h, "low": low, "close": c, "prev_close": prev, "volume": int(vol),  # type: ignore[arg-type]
+        "traded_value": value,
+    }  # fmt: skip
+
+
+def parse(day: date, data: bytes) -> ParsedDay:
+    """One zip as rows of `BAR_SCHEMA`, one per ISIN (the best-ranked series)."""
+    fmt = format_for(day)
+    cols, parse_date = (_OLD, _old_date) if fmt == "old" else (_UDIFF, _iso_date)
     out = ParsedDay(day)
     best: dict[str, dict] = {}
-    for raw in reader:
+    for raw in csv.DictReader(io.StringIO(_csv_text(data))):
         row = {(k or "").strip(): (v or "").strip() for k, v in raw.items() if k is not None}
         series = row.get(cols["series"], "").upper()
         if series not in EQUITY_SERIES:
@@ -217,32 +242,15 @@ def parse(day: date, data: bytes) -> ParsedDay:
         if parse_date(row.get(cols["date"], "")) != day:
             out.wrong_date += 1
             continue
-        isin = row.get(cols["isin"], "").upper()
-        o, h, low, c = (_num(row.get(cols[k])) for k in ("open", "high", "low", "close"))
-        prev, value = _num(row.get(cols["prev"])), _num(row.get(cols["value"]))
-        vol = _num(row.get(cols["volume"]))
-        symbol = row.get(cols["symbol"], "").upper()
-        if (
-            not ISIN_RE.match(isin)
-            or not symbol
-            or None in (o, h, low, c, vol)
-            or vol != int(vol)  # type: ignore[arg-type]
-            or not row_ok(o, h, low, c, prev, int(vol))  # type: ignore[arg-type]
-        ):
+        bar = _bar(row, cols, day, series)
+        if bar is None:
             out.invalid += 1
             continue
-        bar = {
-            "date": day, "isin": isin, "symbol": symbol, "series": series, "open": o,
-            "high": h, "low": low, "close": c, "prev_close": prev, "volume": int(vol),  # type: ignore[arg-type]
-            "traded_value": value,
-        }  # fmt: skip
-        held = best.get(isin)
+        held = best.get(bar["isin"])
+        if held is not None:
+            out.other_series += 1  # one of the two series is left out either way
         if held is None or series_rank(series) < series_rank(held["series"]):
-            if held is not None:
-                out.other_series += 1
-            best[isin] = bar
-        else:
-            out.other_series += 1
+            best[bar["isin"]] = bar
     out.rows = sorted(best.values(), key=lambda r: r["isin"])
     return out
 

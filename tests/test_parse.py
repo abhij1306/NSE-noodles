@@ -95,3 +95,35 @@ def test_review_fixes():
     assert parse.combine(["Dividend - Rs 2 Per Share", "Dividend - Rs Two Per Share"]) == (
         "no_amount"
     )
+
+
+def test_dividend_breakdowns_and_reasons():
+    assert parse.payouts(
+        "Final Dividend - Rs 10 Per Share (Including Special Dividend - Rs 4 Per Share)"
+    ) == (Payout("final", Decimal(6)), Payout("special", Decimal(4)))
+    assert parse.payouts(
+        "Dividend Rs 10 Per Share (Final Dividend Rs 6 + Special Dividend Rs 4)"
+    ) == (Payout("final", Decimal(6)), Payout("special", Decimal(4)))
+    assert (
+        parse.payouts("Dividend - Rs 10 Per Share (Interim Dividend Rs 4 Per Share)")
+        == "breakdown_disagrees"
+    )
+    assert parse.payouts("Dividend On Preference Shares Rs 2") == "preference_dividend"
+    assert parse.payouts("Dividend On Preference Shares Rs 2 / Final Dividend Rs 3 Per Share") == (
+        Payout("final", Decimal(3)),
+    )
+    assert parse.payouts("Interim Dividend Rs 2 Rs 3 Per Share") == "several_amounts"
+    assert parse.payouts("Dividend - Rs 0 Per Share") == "no_amount"
+
+
+def test_combine_feed_rows():
+    assert parse.combine(
+        ["Interim Dividend - Rs 2 Per Share", "Special Dividend - Rs 3 Per Share"]
+    ) == (Payout("interim", Decimal(2)), Payout("special", Decimal(3)))
+    assert parse.combine(
+        ["Dividend - Rs 2 Per Share", "Dividend - Rs 3 Per Share (Purpose Revised)"]
+    ) == (Payout("final", Decimal(3)),)
+    assert parse.combine(["Dividend - Rs 2 Per Share", "Dividend - 25%"]) == "percent_of_face_value"
+    assert parse.combine(["Annual General Meeting/Dividend"]) == "no_amount"
+    assert parse.combine([]) == "no_dividend"
+    assert parse.combine(["Dividend On Preference Shares Rs 2"]) == "preference_dividend"

@@ -18,12 +18,13 @@ from .http import NseClient
 from .layout import Layout, NotFoundMemo, atomic_write, write_bytes
 
 ARCHIVE_URL = "https://nsearchives.nseindia.com/content/indices/"
-DEFAULT_NAMES = ("NIFTY 50", "NIFTY 500", "NIFTY SMALLCAP 250", "INDIA VIX")
+NIFTY_50, NIFTY_500 = "NIFTY 50", "NIFTY 500"
+DEFAULT_NAMES = (NIFTY_50, NIFTY_500, "NIFTY SMALLCAP 250", "INDIA VIX")
 ALIASES = {
-    "CNX NIFTY": "NIFTY 50",
-    "S&P CNX NIFTY": "NIFTY 50",
-    "CNX 500": "NIFTY 500",
-    "S&P CNX 500": "NIFTY 500",
+    "CNX NIFTY": NIFTY_50,
+    "S&P CNX NIFTY": NIFTY_50,
+    "CNX 500": NIFTY_500,
+    "S&P CNX 500": NIFTY_500,
 }
 INDEX_SCHEMA = {
     "date": pl.Date,

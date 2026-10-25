@@ -92,7 +92,8 @@ def test_ledger_keeps_the_first_observation():
     _, new = versions.stamp([dict(v)], {}, first)
     assert len(new) == 1
     again, new = versions.stamp([dict(v)], {v["version_id"]: first}, datetime(2026, 10, 1))
-    assert not new and again[0]["first_observed_at"] == first
+    assert not new
+    assert again[0]["first_observed_at"] == first
 
 
 def test_corrections_add_versions_and_never_edit_one():
@@ -108,7 +109,8 @@ def test_corrections_add_versions_and_never_edit_one():
     gone = Correction(2, "delete", "INE000X01011", EX, "split", None, None, "not a split")
     log = apply_corrections(found, [fix, gone], Chains([], [], []), {})
     assert [r["status"] for r in log] == ["applied", "applied"]
-    assert held["value"] == 0.5 and [v["value"] for v in found] == [0.5, 0.1, 1.0]
+    assert held["value"] == 0.5
+    assert [v["value"] for v in found] == [0.5, 0.1, 1.0]
     table = versions.frame(versions.number(found))
     replay = {
         d: versions.select(table, versions.cutoff(d))["value"].to_list()

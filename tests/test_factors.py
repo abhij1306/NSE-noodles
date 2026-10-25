@@ -42,7 +42,8 @@ def test_demerger_market_factor_rules():
     # every check disagrees: stored only if confirmed, material and held
     held = Fraction(61, 100)
     f, why = factors.market_factor(gap, {"ratio": Fraction(9, 10)}, True, held)
-    assert f == gap and why == "gap_disagrees_material_drop_held"
+    assert f == gap
+    assert why == "gap_disagrees_material_drop_held"
     assert (
         factors.market_factor(gap, {}, True, Fraction(95, 100))[1] == "no_cross_check_gap_not_held"
     )
@@ -63,7 +64,8 @@ def test_ratio_and_coa_cross_checks():
 
 def test_dividend_factor_and_cash_rules():
     f = factors.dividend_factor(Decimal("7.50"), Decimal("430.35"))
-    assert f is not None and round(f, 6) == Decimal("0.982572")
+    assert f is not None
+    assert round(f, 6) == Decimal("0.982572")
     assert factors.dividend_factor(Decimal(500), Decimal(400)) is None
     assert factors.over_yield(Decimal(60), Decimal(100))
     assert factors.bonus_instrument_counts(Decimal("12.50"), Decimal("154.75"))

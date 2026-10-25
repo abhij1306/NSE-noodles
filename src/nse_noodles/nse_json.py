@@ -15,7 +15,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from .http import NseClient
+from .http import Fetched, NseClient
 from .layout import Layout, write_bytes
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,29 @@ def _rows(payload: object) -> list | None:
     return payload if isinstance(payload, list) else None
 
 
+def _decoded(got: Fetched) -> list | None:
+    if got.status != "ok":
+        return None
+    try:
+        return _rows(json.loads(got.data.decode("utf-8", errors="replace")))
+    except ValueError:
+        return None
+
+
+def _fetch(
+    client: NseClient, endpoint: str, step: int, index: str, first: date, last: date
+) -> tuple[list, str | None]:
+    """Every row from `first` to `last` in `step`-day chunks, and the first chunk that failed."""
+    rows: list = []
+    for a, b in chunks(first, last, step):
+        params = {"index": index, "from_date": f"{a:%d-%m-%Y}", "to_date": f"{b:%d-%m-%Y}"}
+        found = _decoded(client.get(API + endpoint, params, cookies=True))
+        if found is None:
+            return rows, f"{a}..{b}"
+        rows.extend(found)
+    return rows, None
+
+
 @dataclass
 class PullReport:
     months_written: int = 0
@@ -91,23 +114,9 @@ def pull(
         if path.exists() and whole_month and not (current and refresh_current):
             report.months_skipped += 1
             continue
-        rows: list = []
-        ok = True
-        for a, b in chunks(first, last, step):
-            params = {"index": index, "from_date": f"{a:%d-%m-%Y}", "to_date": f"{b:%d-%m-%Y}"}
-            got = client.get(API + endpoint, params, cookies=True)
-            found = None
-            if got.status == "ok":
-                try:
-                    found = _rows(json.loads(got.data.decode("utf-8", errors="replace")))
-                except ValueError:
-                    found = None
-            if found is None:
-                ok = False
-                report.failed.append(f"{dataset}/{index} {a}..{b}")
-                break
-            rows.extend(found)
-        if not ok:
+        rows, failed = _fetch(client, endpoint, step, index, first, last)
+        if failed is not None:
+            report.failed.append(f"{dataset}/{index} {failed}")
             continue
         if not whole_month:  # a partial month is named by its range, never mistaken for a full one
             path = folder / f"{first:%Y-%m}_{first.day:02d}-{last.day:02d}.json"

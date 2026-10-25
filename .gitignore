@@ -17,3 +17,4 @@ __pycache__/
 .ruff_cache/
 dist/
 .env
+.claude/worktrees/

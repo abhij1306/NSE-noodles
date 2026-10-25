@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import sys
 from datetime import date, datetime
 from pathlib import Path
 
@@ -116,7 +115,7 @@ def build_step(layout: Layout, step: str, args: argparse.Namespace) -> None:
         _print("reports", reports.write_all(layout, args.holidays))
 
 
-def main(argv: list[str] | None = None) -> int:
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="noodles", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -177,8 +176,38 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="also pull announcements and board meetings (slow; dates each event's first notice)",
     )
+    return parser
 
-    args = parser.parse_args(argv)
+
+def _pull(layout: Layout, client: NseClient, args: argparse.Namespace) -> None:
+    if args.what == "bhavcopy":
+        pull_bhavcopy(layout, client, args)
+    elif args.what == "indices":
+        pull_indices(layout, client, args)
+    elif args.what == "nse":
+        pull_nse(layout, client, args)
+    else:
+        _print("lists", nse_json.pull_lists(layout, client))
+
+
+def _run(layout: Layout, client: NseClient, args: argparse.Namespace) -> None:
+    """Pull everything for the range in order; the caller then builds every step."""
+    args.extra_days, args.recheck, args.refresh_current, args.rebuild = [], False, False, False
+    pull_bhavcopy(layout, client, args)
+    build_step(layout, "bars", args)
+    pull_indices(layout, client, args)
+    args.dataset = (
+        ["corporate_actions", "announcements", "board_meetings"]
+        if args.with_announcements
+        else ["corporate_actions"]
+    )
+    args.index = ["equities", "sme"]
+    pull_nse(layout, client, args)
+    _print("lists", nse_json.pull_lists(layout, client))
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = _parser().parse_args(argv)
     logging.basicConfig(
         level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(message)s"
     )
@@ -187,35 +216,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "build":
         build_step(layout, args.step, args)
-        return 0
+        return
     with NseClient(interval=args.interval) as client:
         if args.cmd == "pull":
-            if args.what == "bhavcopy":
-                pull_bhavcopy(layout, client, args)
-            elif args.what == "indices":
-                pull_indices(layout, client, args)
-            elif args.what == "nse":
-                pull_nse(layout, client, args)
-            else:
-                _print("lists", nse_json.pull_lists(layout, client))
-            return 0
-        # run: everything in order
-        args.extra_days, args.recheck, args.refresh_current, args.rebuild = [], False, False, False
-        pull_bhavcopy(layout, client, args)
-        build_step(layout, "bars", args)
-        pull_indices(layout, client, args)
-        args.dataset = (
-            ["corporate_actions", "announcements", "board_meetings"]
-            if args.with_announcements
-            else ["corporate_actions"]
-        )
-        args.index = ["equities", "sme"]
-        pull_nse(layout, client, args)
-        _print("lists", nse_json.pull_lists(layout, client))
+            _pull(layout, client, args)
+            return
+        _run(layout, client, args)
     for step in ("bars", "ca-db", "actions", "hindsight", "reports"):
         build_step(layout, step, args)
-    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

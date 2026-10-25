@@ -99,17 +99,24 @@ class NseClient:
             if cookies and not self._warm:
                 self.warm_up()
             self._pace()
-            try:
-                response = self._session().get(url, params=params)
-            except httpx.HTTPError as exc:
-                logger.warning("try %d %s: %s", attempt + 1, url, type(exc).__name__)
-            else:
-                if response.status_code == 404:
-                    return Fetched("not_found")
-                if response.status_code == 200 and response.content:
-                    return Fetched("ok", response.content)
-                logger.warning("try %d %s: HTTP %d", attempt + 1, url, response.status_code)
+            got = self._attempt(url, params, attempt)
+            if got is not None:
+                return got
             time.sleep(2 + 2 * attempt)
             if attempt == 1:
                 self.reset()
         return Fetched("error")
+
+    def _attempt(self, url: str, params: dict[str, str] | None, attempt: int) -> Fetched | None:
+        """One request: its answer, or None when it is worth asking again."""
+        try:
+            response = self._session().get(url, params=params)
+        except httpx.HTTPError as exc:
+            logger.warning("try %d %s: %s", attempt + 1, url, type(exc).__name__)
+            return None
+        if response.status_code == 404:
+            return Fetched("not_found")
+        if response.status_code == 200 and response.content:
+            return Fetched("ok", response.content)
+        logger.warning("try %d %s: HTTP %d", attempt + 1, url, response.status_code)
+        return None
