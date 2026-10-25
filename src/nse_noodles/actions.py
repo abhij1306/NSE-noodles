@@ -70,6 +70,7 @@ DISPUTE_DAYS = 60
 SKIP_DIVIDEND = ("not_equity_share", "not_equity_series", "preference_dividend", "no_dividend")
 SKIP = "skip:"  # a proposal reason with this prefix is skipped, never reviewed
 PRICE_TYPES = ("split", "bonus", "rights")  # the factors gated together per session pair
+UNMATCHED = "research_unmatched"  # research about no feed row that it cannot stand in for
 BONUS_BEFORE, BONUS_AFTER = 7, 3  # NSE's ex-date vs a researched bonus-debenture date
 # a bonus of debentures / preference shares to some holders only is no per-share distribution
 SOME_HOLDERS = ("non-promoter", "non promoter", "public only", "promoters excluded")
@@ -276,11 +277,24 @@ def _attach_research(feed: list[Proposal], research: Sequence[ResearchRow]) -> s
     return used
 
 
+def _unmatched(r: ResearchRow) -> Proposal:
+    """Research qualifying a feed row (a bonus instrument's value, a split or bonus) that names
+    none: never an event of its own, a review row pointing at the research line."""
+    table = RESEARCH_TABLE.get(r.table, r.table)
+    p = Proposal(table, r.symbol, r.isin, r.ex_date, f"research {r.table}", source="research")  # type: ignore[arg-type]
+    p.reason, p.hint = UNMATCHED, f"{r.file}:{r.line}"
+    return p
+
+
 def _research_only(research: Sequence[ResearchRow], used: set[int]) -> list[Proposal]:
     """Research events NSE's feed does not carry, one proposal per (table, company, ex-date)."""
     extra: dict[tuple[str, str, date], Proposal] = {}
+    unmatched = []
     for i, r in enumerate(research):
-        if i in used or r.ex_date is None or r.table not in ("demerger", "rights"):
+        if i in used or r.ex_date is None:
+            continue
+        if r.table not in ("demerger", "rights"):
+            unmatched.append(_unmatched(r))
             continue
         key = (r.table, r.symbol or r.isin, r.ex_date)
         if key not in extra:
@@ -293,7 +307,7 @@ def _research_only(research: Sequence[ResearchRow], used: set[int]) -> list[Prop
                 source="research",
             )
         extra[key].research.append(r)
-    return list(extra.values())
+    return [*extra.values(), *unmatched]
 
 
 def proposals(con: duckdb.DuckDBPyConnection, research: Sequence[ResearchRow]) -> list[Proposal]:
@@ -1073,6 +1087,9 @@ def _resolve(props: list[Proposal], chains: Chains, out: Outcome) -> Resolved:
     for p in props:
         if p.reason.startswith(SKIP):
             out.skipped.append(_row(p, p.reason.removeprefix(SKIP)))
+            continue
+        if p.reason == UNMATCHED:  # reviewed as such, whether or not the bars know the company
+            out.review.append(_row(p, p.reason))
             continue
         chain = chains.resolve(p.symbol, p.isin, p.ex_date)
         if chain is None:

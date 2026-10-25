@@ -439,3 +439,19 @@ def test_an_unparsed_split_with_research_still_goes_to_review(tmp_path):
     layout, curation = _archive(tmp_path, A_ONLY, {"splits_bonus": [unparsed]}, research)
     summary = actions.build(layout, curation, NOW)
     assert (summary["events"], summary["review"]) == ({}, {"unparsed": 1})
+
+
+def test_research_about_no_feed_row_is_reviewed(tmp_path):
+    # bonus and bonus-instrument research only qualifies a feed row; alone it is a review case
+    later = EX + timedelta(days=21)
+    research = [
+        _research_row(**A_SPLIT_RESEARCH),
+        _research_row(**{**A_SPLIT_RESEARCH, "table": "bonus_instrument", "ex_date": str(later)}),
+    ]
+    layout, curation = _archive(tmp_path, A_ONLY, {}, research)
+    summary = actions.build(layout, curation, NOW)
+    assert (summary["events"], summary["review"]) == ({}, {"research_unmatched": 2})
+    assert _built(layout, "review", '"table", ex_date, hint') == [
+        ("bonus_instruments", later, "r.csv:3"),
+        ("splits_bonus", EX, "r.csv:2"),
+    ]
