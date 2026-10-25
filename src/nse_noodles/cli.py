@@ -8,8 +8,9 @@
     noodles --data D build replay --as-of YYYY-MM-DD     (point-in-time replay, exit calendar)
     noodles --data D run --from ... --to ...             (everything, in order)
 
-Every step is resumable and idempotent: rerun it after an interruption. The exit code is 1
-when a download or a build step failed (the printed counts say which).
+With no arguments, `noodles` opens a guided menu that asks for each choice and shows the
+command it runs. Every step is resumable and idempotent: rerun it after an interruption. The
+exit code is 1 when a download or a build step failed (the printed counts say which).
 """
 
 from __future__ import annotations
@@ -17,10 +18,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 from datetime import date, datetime
 from pathlib import Path
 
-from . import actions, adjusted, bhavcopy, ca_db, exits, indices, nse_json, reports
+from . import actions, adjusted, bhavcopy, ca_db, exits, indices, interactive, nse_json, reports
 from .http import DEFAULT_INTERVAL, NseClient
 from .layout import Layout
 
@@ -219,7 +221,23 @@ def _run(layout: Layout, client: NseClient, args: argparse.Namespace) -> bool:
     return all(ok)
 
 
+def _run_argv(argv: list[str]) -> int:
+    """`main` for the interactive menu: the exit code instead of SystemExit."""
+    try:
+        main(argv)
+    except SystemExit as exc:
+        return exc.code if isinstance(exc.code, int) else 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> None:
+    argv = sys.argv[1:] if argv is None else argv
+    if not argv:  # no arguments: the guided menu
+        try:
+            code = interactive.main(input, print, _run_argv)
+        except (EOFError, KeyboardInterrupt):
+            code = 0
+        raise SystemExit(code)
     args = _parser().parse_args(argv)
     logging.basicConfig(
         level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(message)s"
