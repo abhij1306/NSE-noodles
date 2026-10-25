@@ -177,6 +177,27 @@ def test_a_demerger_without_research_needs_it_unless_the_drop_held():
     assert _decided(got) == [("demerger", 0.75, "market_gap", "settled_close")]
 
 
+def test_a_research_only_demerger_needs_an_agreeing_check_not_just_a_held_drop():
+    # no resulting-company close and no CoA: the 25% drop held, but only research dates it
+    out = Outcome()
+    p = _demerger((replace(RESEARCH, ratio=None),))
+    p.source = "research"
+    assert actions.decide_demerger("B", p, PARENT, Fraction(1), {}, {}, FLAT, out) == []
+    assert [r["reason"] for r in out.review] == ["no_cross_check_date_unconfirmed"]
+    got = actions.decide_demerger(
+        "B", _demerger(), PARENT, Fraction(1),
+        {"INE000C01011": CHILD}, {("r.csv", 2): "INE000C01011"}, FLAT, out,
+    )  # fmt: skip
+    assert [r["available_basis"] for r in got] == ["settled_close", "resulting_first_close"]
+    p = _demerger()
+    p.source = "research"
+    got = actions.decide_demerger(
+        "B", p, PARENT, Fraction(1),
+        {"INE000C01011": CHILD}, {("r.csv", 2): "INE000C01011"}, FLAT, out,
+    )  # fmt: skip
+    assert [r["available_basis"] for r in got] == ["resulting_first_close"] * 2
+
+
 def test_a_demerger_gap_is_divided_by_the_market_move_that_night():
     # NIFTY 500 opens 4% down on the ex-date and stays there: 150/200 = 0.75 raw, 0.78125 neutral
     index = {d: (1000.0, 1000.0) if d < DEMERGER else (960.0, 960.0) for d in FLAT}
