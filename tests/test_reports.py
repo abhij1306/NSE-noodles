@@ -1,7 +1,29 @@
 import json
+from datetime import date, datetime
+
+import polars as pl
 
 from nse_noodles import reports
 from nse_noodles.layout import Layout
+
+
+def test_available_after_ex_open_counts_a_version_known_later_on_the_ex_date():
+    """A factor known at the ex-date's close (lag 0 sessions) still came too late for a backtest
+    trading that open, so it counts as available after the ex-date."""
+    ex = date(2026, 9, 7)
+    log = pl.DataFrame(
+        {
+            "ex_date": [ex] * 5,
+            "available_at": [
+                datetime(2026, 9, 4, 23, 59, 59),  # filed the session before
+                datetime(2026, 9, 7, 10, 0),  # the ex-date's open itself
+                datetime(2026, 9, 7, 16, 0),  # the ex-date's close
+                datetime(2026, 9, 9, 16, 0),  # two sessions on
+                None,  # never known
+            ],
+        }
+    )
+    assert reports.available_after_ex_open(log) == 2
 
 
 def _touch(folder, days):

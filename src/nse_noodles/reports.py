@@ -32,6 +32,7 @@ from . import exits
 from .bars import sessions as bar_sessions
 from .factors import JUMP_TOL
 from .layout import Layout, NotFoundMemo, atomic_write
+from .versions import OPEN_KNOWN
 
 JUMP_MAX_DAYS = 14  # a relisting after a longer suspension may jump on its own
 HINT_DAYS = 7
@@ -195,6 +196,14 @@ def lag_sessions(sessions: list[date], ex: date, known: datetime | None) -> int 
     return max(0, bisect_left(sessions, known.date()) - bisect_left(sessions, ex))
 
 
+def available_after_ex_open(log: pl.DataFrame) -> int:
+    """Events whose version became available after the ex-date's open (`versions.at_open`): a
+    backtest trading that open could not have had it, even when it was known later the same
+    day (`lag_sessions` 0)."""
+    late = pl.col("available_at") > pl.col("ex_date").dt.combine(OPEN_KNOWN)
+    return int(log.select(late.sum()).item())
+
+
 def adjustment_log(layout: Layout) -> pl.DataFrame:
     with duckdb.connect(str(layout.db), read_only=True) as con:
         log = con.sql(LOG_SQL).pl()
@@ -234,7 +243,7 @@ def write_all(layout: Layout, holidays_file: str | None = None) -> dict[str, obj
             "by_available_basis": dict(
                 log.group_by("available_basis").len().sort("available_basis").rows()
             ),
-            "available_after_ex_date": int((log["lag_sessions"] > 0).sum()),
+            "available_after_ex_date": available_after_ex_open(log),
             "available_at_unknown": int(log["available_at"].is_null().sum()),
             "announced_on_found": int(log["announced_on"].is_not_null().sum()),
         },
