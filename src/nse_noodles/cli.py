@@ -79,9 +79,7 @@ def pull_nse(layout: Layout, client: NseClient, args: argparse.Namespace) -> boo
     ok = True
     for dataset in args.dataset:
         for index in args.index:
-            r = nse_json.pull(
-                layout, client, dataset, start, end, index, refresh_current=args.refresh_current
-            )
+            r = nse_json.pull(layout, client, dataset, start, end, index)
             _print(
                 f"{dataset}/{index}",
                 {
@@ -171,7 +169,6 @@ def _parser() -> argparse.ArgumentParser:
         "--dataset", nargs="+", default=["corporate_actions"], choices=sorted(nse_json.DATASETS)
     )
     pn.add_argument("--index", nargs="+", default=["equities"], choices=nse_json.INDEXES)
-    pn.add_argument("--refresh-current", action="store_true", help="refetch the current month")
     pull.add_parser("lists")
 
     build = sub.add_parser("build")
@@ -213,7 +210,7 @@ def _pull(layout: Layout, client: NseClient, args: argparse.Namespace) -> bool:
 
 def _run(layout: Layout, client: NseClient, args: argparse.Namespace) -> bool:
     """Pull everything for the range in order; the caller then builds every step."""
-    args.extra_days, args.recheck, args.refresh_current, args.rebuild = [], False, False, False
+    args.extra_days, args.recheck, args.rebuild = [], False, False
     ok = [pull_bhavcopy(layout, client, args), build_step(layout, "bars", args)]
     ok.append(pull_indices(layout, client, args))
     args.dataset = (

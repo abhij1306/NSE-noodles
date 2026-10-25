@@ -5,7 +5,7 @@ symbol-change, name-change and holiday lists.
 Each month is one file, `raw/nse/<dataset>/<index>/YYYY-MM.json` (the JSON list the endpoint
 answered, concatenated over the month's request chunks), written only when every chunk of the
 month succeeded. A rerun skips months already on disk, so a pull resumes where it stopped; the
-current month is fetched again until it has ended (`--refresh-current`).
+current month is fetched again on every pull until it has ended.
 """
 
 from __future__ import annotations
@@ -101,7 +101,6 @@ def pull(
     end: date,
     index: str = "equities",
     *,
-    refresh_current: bool = False,
     today: date | None = None,
 ) -> PullReport:
     endpoint, step = DATASETS[dataset]
@@ -112,8 +111,7 @@ def pull(
         path = folder / f"{first:%Y-%m}.json"
         # whole only once it has ended: a month fetched on its last day is still being filed
         whole_month = first.day == 1 and (last + timedelta(days=1)).day == 1 and last < today
-        current = last >= today.replace(day=1)
-        if path.exists() and whole_month and not (current and refresh_current):
+        if path.exists() and whole_month:
             report.months_skipped += 1
             continue
         rows, failed = _fetch(client, endpoint, step, index, first, last)

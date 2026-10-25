@@ -47,7 +47,7 @@ skipped. Never run two pulls at once.
 |---|---|---|
 | `pull bhavcopy` | `--from`, `--to`, `--extra-days D [D ...]`, `--recheck` | One bhavcopy zip per weekday in the range, plus `--extra-days` (weekend sessions; days outside the range are ignored). A 404 is remembered in `raw/not_found.json` and not asked again unless `--recheck`. A reply that is not a readable zip is an error and is asked again on the next run |
 | `pull indices` | `--from`, `--to`, `--recheck` | The index archive for each day **that already has a bar file** in the range. Run `build bars` first |
-| `pull nse` | `--from`, `--to`, `--dataset NAME [NAME ...]`, `--index equities\|sme [...]`, `--refresh-current` | NSE JSON feeds, month by month. `--dataset`: `corporate_actions` (default), `announcements` (fetched a week at a time, slow), `board_meetings`. `--index`: `equities` (default), `sme` |
+| `pull nse` | `--from`, `--to`, `--dataset NAME [NAME ...]`, `--index equities\|sme [...]` | NSE JSON feeds, month by month. `--dataset`: `corporate_actions` (default), `announcements` (fetched a week at a time, slow), `board_meetings`. `--index`: `equities` (default), `sme` |
 | `pull lists` | none | `symbolchange.csv`, `namechange.csv` and the current year's `holidays.json`. A reply that is not a CSV or JSON (a block page) never replaces a good file |
 
 `--from` defaults to 2011-06-22 (the first bhavcopy with ISINs) and `--to` to today. Dates are
@@ -56,8 +56,7 @@ skipped. Never run two pulls at once.
 `pull nse` skips a month only when its file exists and the month had ended when it was fetched.
 A month still in progress, or a range that starts or ends inside a month, is saved as
 `YYYY-MM_DD-DD.json` and fetched again on the next pull. A whole-month file wins over a partial
-one when the feed is read. `--refresh-current` is accepted but changes nothing: the month in
-progress is fetched again on every pull anyway.
+one when the feed is read.
 
 Requests: every request sends a browser User-Agent and Referer, and before the website JSON
 endpoints (`pull nse`, the holiday list) the client loads NSE's home page for cookies. It waits `--interval` seconds between requests and tries each one 5 times, backing off
