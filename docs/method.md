@@ -117,25 +117,29 @@ flowchart TD
 16. Demerger: NSE gives no factor; the market prices it.
     - **Ex-date version** (`basis index_neutral_gap`): the gap ex-date open / previous close
       (NSE sets the open in a special pre-open for F&O stocks, the regular pre-open otherwise),
-      divided by any other factor accepted for that session and by the NIFTY 500's move over
-      the same night (its open / its previous close), so the market's move is not read as the
-      action. NIFTY 500 because it is the broadest NSE index in the archive for the whole index
+      divided by the split, bonus and rights factors accepted on that chain for the same
+      session pair, and by the NIFTY 500's move over the same night (its open / its previous
+      close), so the market's move is not read as the action. NIFTY 500 because it is the broadest NSE index in the archive for the whole index
       history (from 2012); a sector index would need a point-in-time stock-to-sector map that
       NSE's free archives do not give. Without index data for either day the raw gap is the
       version (`basis raw_gap`). The raw gap is always kept (`raw_gap`).
     - **Cross-checks**: the research ratio priced at the resulting companies' first closes,
       1 − Σ(aᵢ/bᵢ · Cᵢ) / P, with each Cᵢ divided by the NIFTY 500's move from the parent's
       previous close to that close (computed only when every leg has a ratio, every resulting
-      company has traded, and no other factor falls in that session); and the
-      cost-of-acquisition split, parent % / 100 (a book-value tax allocation, which can differ a
-      lot from the market).
+      company has traded, and no other factor falls in that session). A resulting company is
+      the research row's ISIN, else a new listing under its symbol (first traded no earlier
+      than 5 days before the ex-date, outside the parent's chain); more than one candidate is a
+      review case (`resulting_company_ambiguous`). The other cross-check is the
+      cost-of-acquisition split, parent % / 100 (a book-value tax allocation, which can differ
+      a lot from the market).
     - **Acceptance**: when a cross-check agrees with the gap (the gate of rule 21 with the check
       as the expected value). With none agreeing or none available, only when the neutralised
       gap is at most 0.9 (a drop of at least 10%) and the **settled close** agrees with it. The
       settled close is the close of the fifth session counting the ex-date as the first,
       divided by the NIFTY 500's move from the previous session's close to that close (raw when
-      an index day is missing) and by any same-session factor. The current code treats every
-      demerger ex-date as confirmed. <!-- TODO actions: date_confirmed handling may change; re-check this sentence and the `*_date_unconfirmed` reasons. -->
+      an index day is missing) and by any same-session factor. Every demerger ex-date is
+      currently treated as confirmed, so the `*_date_unconfirmed` reasons in the code do not
+      occur.
     - **Ratio version** (`basis resulting_ratio`): once every resulting company has traded, the
       ratio-priced value is a second version, available from that first close. More than 10%
       from the ex-date version in log terms (|ln(ratio/gap)| > ln 1.1), it is `disputed`, never
@@ -143,7 +147,10 @@ flowchart TD
     - **Band**: each version records `band_low`, `band_high`, the range of the estimates known
       for it (raw gap, neutralised gap, ratio-priced value). It is a spread of estimates, not a
       confidence interval.
-    - Several feed rows of one demerger are decided once per chain and ex-date. <!-- TODO actions: dedup may change to one decision per session pair. -->
+    - Feed rows of one demerger on the same chain and session pair (e.g. dated either side of
+      a holiday) are one event; the others are skipped as `duplicate_event`. A split, bonus or
+      rights row that only repeats factors already stated for its session pair is skipped the
+      same way.
 17. A bonus of debentures or preference shares issues no equity: never a price factor. When its
     researched value is at least 1% of the previous close it is a cash distribution of that
     value (as a dividend); below 1% it is treated as neutral.
@@ -172,7 +179,8 @@ flowchart TD
 24. Every cash dividend counts, however small (leaving small ones out biases returns down).
 25. A purpose with several amounts that cannot be paired with their kinds, a percentage of face
     value, an amount in paise, a total that its breakdown contradicts, or cash above half the
-    previous close is a review case, never guessed. NSE keeps revisions as separate rows:
+    previous close is a review case, never guessed. A day's cash (a dividend and a bonus
+    instrument together) is checked as a whole. NSE keeps revisions as separate rows:
     identical rows count once; rows add up across kinds only when every row names its kind and
     no kind repeats; otherwise a single revised row settles it, else `rows_disagree`.
 26. Two series, never mixed: the PRICE basis (price factors only) for fills, marks and P&L,
@@ -187,8 +195,9 @@ flowchart TD
 28. Nothing is guessed. A row that does not parse, has no bars, or is not confirmed goes to the
     review list with a reason ([review reasons](review-reasons.md)).
 29. Research rows carry a source URL, a short verbatim quote and a confidence. Only stated
-    values are used; low confidence goes to review. A date a research row disputes sends the
-    event to review ([curation](curation.md#researchcsv)).
+    values are used; low confidence goes to review. A demerger or rights research row dated
+    within 60 days of NSE's ex-date but not on it, or naming a record date that does not fit,
+    sends the event to review (`date_disputed`) ([curation](curation.md#researchcsv)).
 30. Wrong or missing factors are fixed by a reviewed correction list (add, replace, delete,
     move), each line with its evidence; it is applied last and re-applied on every rebuild. Each
     line adds a version (a deletion is a version of value 1); none edits one.
@@ -209,9 +218,9 @@ flowchart TD
     - `first_observed_at`: when this pipeline first produced it (from the ledger). A history
       built today is first observed today: a replay is a reconstruction, not a record of what
       was seen live.
-    - `available_at`: the latest of every price and source the value and its acceptance read.
-      A time is never moved earlier than its evidence. A source without a date makes it
-      unknown (empty).
+    - `available_at`: the latest of every price and source the value and its acceptance read,
+      and never earlier than `source_published_at`. A time is never moved earlier than its
+      evidence. A source without a date makes it unknown (empty).
 
     `available_basis` says which fact set `available_at`:
 
@@ -222,15 +231,19 @@ flowchart TD
     | `resulting_first_close` | 16:00 on the last resulting company's first session (never before the research source date): a ratio-priced demerger version, or a gap accepted because the ratio agreed |
     | `research_source_date` | The end (23:59:59) of the research row's `source_date`, never before the price the decision read |
     | `correction` | The end of the correction line's `known_on` |
+    | `source_published` | The end of `source_published_at`'s day, when that is later than the time the prices set (e.g. the first NSE filing found is dated the ex-date itself) |
     | `research_undated`, `correction_undated` | Unknown (empty) |
 34. HINDSIGHT (`out/hindsight_daily.parquet`): each event at its accepted version of highest
     precedence, whatever its availability, for research only; `factor_pending` flags bars from
     an ex-date until the event's first version was available. POINT-IN-TIME REPLAY as of D
     (`out/replay_daily_asof=D.parquet`): bars up to D; per event the accepted version of highest
     precedence with `available_at` by the end of D (23:59:59) and an ex-date on or before D;
-    and ISIN links whose `known_on` is on or before D. `known_on` is the new ISIN's first day +
-    10 calendar days, the window of bars the link rules read, so a build stopped inside that
-    window never dates the link earlier. <!-- TODO actions: lineage known_on may change to cover the widest window the link rules read. --> An unknown `available_at` never qualifies.
+    and ISIN links whose `known_on` is on or before D. An unknown `available_at` never
+    qualifies. A link's `known_on` is the latest of the windows the link rules read: the new
+    ISIN's first day + 10 days (its bars), its first day + 30 days (restructuring and
+    name-change texts), and the 31st session after the old ISIN's last day (a competing
+    successor may start until then). It stays empty, and the link out of every replay, until the
+    bars reach that session, so a build stopped inside a window never dates a link earlier.
 35. Adding a version available after D never changes the replay as of D (tested on the pure
     selection, `versions.select`, in `tests/test_point_in_time.py`).
 36. `announced_on` is the date of an NSE filing (announcement or board-meeting intimation) of
@@ -301,7 +314,7 @@ flowchart TD
   exitable. Research and corrections without a source date never enter a replay rather than
   being dated by guess.
 - **Replays of a history built today are reconstructions** (`first_observed_at` says when the
-  pipeline first saw each version). A link can become a review case when a competing successor
-  appears up to 30 sessions later, so a replay of the full build can lack a link that a build
-  stopped earlier had.
+  pipeline first saw each version). An ISIN link reaches replays only about six weeks after the
+  change (rule 34), so a replay just after an ISIN change shows the two ISINs as separate
+  chains.
 - **No pay dates.** Dividend cash is credited on the ex-date.

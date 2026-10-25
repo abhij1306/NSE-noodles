@@ -79,14 +79,15 @@ line, then rerun from `build actions`.
 | `reports.adjustment_log.available_after_ex_date` | Events whose version became usable only after 10:00 on the ex-date. Informational |
 | `reports.demerger_exits` `not_exitable:announced_on_unknown` | No pulled filing writes the record date: pull announcements and board meetings for the range, or accept that those positions hold through |
 | `actions.disputed` | A demerger's ratio version is more than 10% (log) from its gap version: see `demerger_versions_disagree` |
-| `actions.withdrawn_from_ledger` | Versions an earlier build produced and this one did not (a research row edited or removed). Report it; fixes go through `corrections.tsv` |
+| `actions.withdrawn_from_ledger` | Versions an earlier build produced and this one did not (a research row edited or removed, or a code upgrade that changed how versions are dated). Report it; fixes go through `corrections.tsv` |
 
 Routing `actions.review` reasons (full list: `docs/review-reasons.md`):
 
 | Reasons | Go to |
 |---|---|
-| `needs_research:*`, `gap_disagrees_*`, `no_cross_check_*`, `no_drop`, `demerger_versions_disagree`, `date_disputed`, `low_confidence` | `research-corporate-action` (demerger) |
-| `no_issue_price`, `non_simple`, `unparsed` on `rights_issues`, `low_confidence` | `research-corporate-action` (rights) |
+| `needs_research:*`, `gap_disagrees_*`, `no_cross_check_*`, `no_drop`, `demerger_versions_disagree`, `date_disputed`, `low_confidence`, `resulting_company_ambiguous` | `research-corporate-action` (demerger) |
+| `no_issue_price`, `non_simple`, `unparsed` on `rights_issues`, `low_confidence`, `date_disputed` | `research-corporate-action` (rights) |
+| `research_unmatched` | A research row that matches no feed row: `hint` is its `file:line`. Fix its ISIN, symbol or `ex_date` |
 | `needs_value`, `some_holders_only` | `research-corporate-action` (bonus instrument) |
 | `ambiguous` (mostly bonuses to public holders only) | `research-corporate-action` (public-only bonus: a correction) |
 | `off_factor`, `conflicting_rows`, `unparsed` on `splits_bonus`, `research_says_row_wrong` | Find the filing; a correction line (`docs/curation.md`) |

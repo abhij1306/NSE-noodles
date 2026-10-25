@@ -112,7 +112,8 @@ pull failed, so you get the counts. The exit code still reports the failure.
 | 1 | A step stopped with an error (a Python traceback), e.g. a bad curation line, which names its file and line. Also `build replay` without `--as-of` |
 | 2 | The command line could not be parsed (unknown option, `--data` missing or placed after the subcommand) |
 
-The menu ends with the exit code of the last command it ran (0 if none).
+The menu ends with the exit code of the last command it ran (0 if none, or when input ends).
+Ctrl-C in the menu exits with 130.
 
 ## What each command prints
 

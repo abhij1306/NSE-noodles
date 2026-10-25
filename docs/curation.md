@@ -31,9 +31,9 @@ Every file needs all 24 columns in its header, in any order (`RESEARCH_COLUMNS` 
 |---|---|
 | `table` | Required: `demerger`, `rights`, `bonus_instrument` or `split_bonus` (see [table names](#from-a-review-row-to-a-research-row)) |
 | `symbol`, `isin` | The NSE symbol and ISIN of the event (a match on either is enough) |
-| `ex_date` | Required. **NSE's ex-date** of the event, exactly as in the review row (`day` in `review.csv`), even when your source names another date |
+| `ex_date` | Required. **NSE's ex-date** of the event, as in the review row (`day` in `review.csv`). Write another date only to dispute NSE's ([rules](#rules)) |
 | `leg_type` | Empty or one of `demerger`, `amalgamation`, `rights`, `bonus`, `split`, `bonus_instrument` |
-| `resulting_name`, `resulting_symbol`, `resulting_isin` | Demerger: the resulting company. The build finds its prices by `resulting_isin`, else by `resulting_symbol` |
+| `resulting_name`, `resulting_symbol`, `resulting_isin` | Demerger: the resulting company. The build finds its prices by `resulting_isin`, else by `resulting_symbol` ([how](#how-a-row-is-matched-and-used)) |
 | `ratio_a`, `ratio_b` | `ratio_a` new (or resulting) shares for every `ratio_b` held. Both or neither |
 | `issue_price` | Rights: face value + premium, the **full** price even if partly paid |
 | `face_value` | Informational only; not read |
@@ -71,46 +71,54 @@ lone `ratio_a` or `ratio_b`, a missing `ex_date`, or an unreadable date.
 | `bonus_instruments` | `bonus_instrument` |
 | `splits_bonus` | `split_bonus` |
 
-A row with another `table` value stops the build. A row with the right table but another
-ex-date does not match the event (below).
+A row with another `table` value stops the build.
 
 ### How a row is matched and used
 
-<!-- TODO actions: matching may widen to research within ±DISPUTE_DAYS of NSE's ex-date, and unmatched rows may get a `research_unmatched` review reason. -->
+A row applies to an NSE feed event of the same table with the same ISIN or symbol and an ex-date
+close to its own:
 
-A row applies to an NSE event with the same ISIN or symbol and exactly the same `ex_date`. A
-`bonus_instrument` row is the exception: it also matches an NSE ex-date from 7 days before to 3
-days after its own. A `demerger` or `rights` row that matches no feed event becomes an event of
-its own at its `ex_date`. That is meant for events NSE's feed lacks, and it is why a wrong
-`ex_date` can create a duplicate event. An unmatched `bonus_instrument` or `split_bonus` row is
-ignored.
+| research `table` | NSE's ex-date may be | Unmatched row |
+|---|---|---|
+| `demerger`, `rights` | within 60 days of the row's `ex_date` (`DISPUTE_DAYS`) | Becomes an event of its own at its `ex_date`, for events NSE's feed lacks |
+| `bonus_instrument` | from 7 days before to 3 days after the row's `ex_date` | Review: `research_unmatched` (the row's `file:line` is in `hint`) |
+| `split_bonus` | the same day | Review: `research_unmatched` |
+
+A matched `demerger` or `rights` row whose `ex_date` differs from NSE's, or whose `record_date`
+(within 60 days of NSE's ex-date) is not 0 to 7 days after it, sends the event to review as
+`date_disputed`; its terms are not used.
 
 - **demerger**: one row per resulting company. Every row whose `leg_type` is `demerger` (or
   empty) is a leg; `amalgamation` rows are not, and an event with only amalgamation rows is
-  skipped (`amalgamation_only`). Any leg with `low` confidence sends the event to review. With
-  a ratio for every leg and every resulting company traded, the research ratio priced at the
-  resulting companies' first closes is a cross-check, and later a second version
-  ([method rule 16](method.md#factors)). The CoA percentages are another cross-check. A
-  `record_date` within 60 days of NSE's ex-date but not 0 to 7 days after it sends the event to
-  review (`date_disputed`); a record date further away is ignored.
+  skipped (`amalgamation_only`). Any leg with `low` confidence sends the event to review.
+  The resulting company is `resulting_isin`, else the ISINs that first traded under
+  `resulting_symbol` no earlier than 5 days before the ex-date, with bars on or after it, and
+  outside the parent's chain. More than one such ISIN sends the event to review
+  (`resulting_company_ambiguous`). With a ratio for every leg and every resulting company
+  traded, the research ratio priced at the resulting companies' first closes is a cross-check,
+  and a second version ([method rule 16](method.md#factors)). The CoA percentages are another
+  cross-check.
 - **rights**: the first row with `medium` or `high` confidence that has both a ratio and an
   `issue_price` gives the terms. Any row with `non_equity_consideration` sends the event to
   review (`non_simple_research`). If every row is `low`, the event goes to review
   (`low_confidence`). Otherwise NSE's parsed terms are used.
 - **bonus_instrument**: the first row with `value_per_share_rs`. A `low` row goes to review.
   `notes` (or `non_equity_consideration`) that say `non-promoter`, `non promoter`, `public only`
-  or `promoters excluded` send it to review (`some_holders_only`). A value below 1% of the previous close is skipped as
-  price-neutral; otherwise it is credited as a cash distribution.
-- **split_bonus**: only `our_data_wrong` is read; ratios are not used. To fix a split or bonus,
-  write a [correction](#correctionstsv). <!-- TODO actions: a split_bonus research row on an `unparsed` row currently removes that row from review without a decision. -->
+  or `promoters excluded` send it to review (`some_holders_only`). A value below 1% of the
+  previous close is skipped as price-neutral; otherwise it is credited as a cash distribution.
+- **split_bonus**: only `our_data_wrong` is read; ratios are not used, and a split or bonus whose
+  text did not parse stays in review (`unparsed`) whatever research it has. To fix a split or
+  bonus, write a [correction](#correctionstsv).
 - **our_data_wrong** = `yes: ...` on any row: the event's research terms are not used and it
   goes to review as `research_says_row_wrong` until a correction fixes it.
 
 ### Rules
 
-- **`ex_date` is always NSE's ex-date.** Put a different true date in `record_date` and
-  `notes`, or mark `our_data_wrong = yes: date is ...` and fix the date with a `move`
-  correction.
+- **Write NSE's ex-date in `ex_date`.** If you believe NSE's date is wrong, write the true date
+  instead: for a demerger or rights issue within 60 days of NSE's, the event goes to review as
+  `date_disputed`, where a person decides. If NSE's date is wrong, the fix is a correction:
+  `add` at the right date (a `move` applies only to an event that was accepted). More than 60
+  days away the row no longer matches and becomes a separate event, so do not do that.
 - **One row per leg. Never add a second row for the same leg.** For a demerger every row is a
   leg, so a second row for the same resulting company counts that company twice. For rights the
   first confident row in file order wins, not the latest.
@@ -191,8 +199,10 @@ with the evidence.
   (`owner_displaced`), so a chain never forks.
 - `unlink` keeps the two histories apart. The pair stays in `review.csv` as `owner_unlink`, as a
   record of the verdict.
-- A link's `known_on` (when a replay may use it) is the new ISIN's first day + 10 days.
-  <!-- TODO actions: known_on may change to cover the widest window the link rules read. -->
+- A link's `known_on`, from which a replay may use it, is the latest of the new ISIN's first
+  day + 10 days, its first day + 30 days, and the 31st session after the old ISIN's last day
+  (until then a competing successor could still appear). It stays empty, and the link out of
+  every replay, until the bars reach that session ([method rule 34](method.md#point-in-time)).
 
 How to decide: the [review-lineage skill](../.claude/skills/review-lineage/SKILL.md) and
 [method rules 9-12](method.md#isin-lineage).

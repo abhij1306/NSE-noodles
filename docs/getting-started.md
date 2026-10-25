@@ -157,5 +157,10 @@ Replace `DATA` with your data directory (in Python, write `~` paths out in full)
   rerunning `pull nse` picks up new rows.
 - After changing the curation folder, rerun `build actions`, `hindsight`, `reports` and your
   replays ([cli](cli.md#build)).
+- **After upgrading NSE-noodles**, rerun `build actions` and the steps after it. A version
+  whose dating rule changed gets a new `version_id`, so the first rebuild counts the old one in
+  `actions.withdrawn_from_ledger` and records the new one as first observed now in
+  `ledger/factor_versions.jsonl`. That is expected once per upgrade. (The upgrade that made
+  `available_at` never earlier than `source_published_at` does this.)
 - Back up `raw/` and `ledger/` together. Everything else is rebuilt from them; the ledger
   cannot be ([outputs](outputs.md#the-data-directory)).

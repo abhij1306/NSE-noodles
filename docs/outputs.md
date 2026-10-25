@@ -106,8 +106,8 @@ previous_day, ratio, security, feed_near, review_near`, newest first.
 
 - `list` = `actions`: a corporate-action row that was not accepted. `table` is the database
   table it came from: `splits_bonus`, `rights_issues`, `demergers`, `bonus_instruments`,
-  `dividends`. `day` is NSE's ex-date. `text` is the purpose text, `hint` a parse hint, and
-  `evidence` JSON (bars, gap, checks).
+  `dividends`. `day` is NSE's ex-date. `text` is the purpose text, `hint` a parse hint (for
+  `research_unmatched`, the research `file:line`), and `evidence` JSON (bars, gap, checks).
 - `list` = `lineage`: an ISIN succession waiting for a verdict. `table` is `lineage`, `isin` is
   `OLD>NEW`, `symbol` is the new ISIN's first symbol, and `day` is the new ISIN's first day
   (`0001-01-01` for an `override_unused` row with nothing to date it). `evidence` is JSON.
@@ -120,8 +120,10 @@ table. What each reason means and what to do: [review reasons](review-reasons.md
 Every event at its hindsight version, ordered by `ex_date`: `chain_isin, isin, symbol,
 action_type, version, factor, cash, basis, method, source, announced_on, notice_url, ex_date,
 source_published_at, first_observed_at, available_at, available_basis, text, lag_sessions`.
-`lag_sessions` is the number of sessions from the ex-date to the session of `available_at` (0 =
-available on the ex-date itself, empty = unknown).
+`source` is `nse_feed`, `research` (the value read research terms, or the event exists only in
+research) or `correction`. `basis` and `method` of a day's combined cash (a dividend and a bonus
+instrument) join both with `+`. `lag_sessions` is the number of sessions from the ex-date to the
+session of `available_at` (0 = available on the ex-date itself, empty = unknown).
 
 ### Factor version columns
 
@@ -159,7 +161,7 @@ Holiday lists: `holidays.txt` in the curation folder, the file given with `--hol
 | `dividends` | `isin, symbol, series, ex_date, amount, kinds, status, subjects, market, announced_on, notice_url` (one row per ISIN and ex-date) |
 | `announcements` | `symbol, company, isin, announced_at, disseminated_at, category, text, file` |
 | `board_meetings` | `symbol, company, isin, meeting_date, purpose, description, intimated_at` |
-| `lineage` | `old_isin, new_isin, effective, status` (`linked`/`review`)`, reason, evidence, known_on` |
+| `lineage` | `old_isin, new_isin, effective, status, reason, evidence, known_on`. `status` is `linked` or `review`; `effective` is the new ISIN's first day; `known_on` is when a replay may use the link, empty until the bars reach it ([method rule 34](method.md#point-in-time)) |
 | `chain_map` | `isin, chain_isin, depth` |
 | `factor_versions` | `version_id, chain_isin, isin, symbol, ex_date, action_type, version, status, value, cash, basis, raw_gap, band_low, band_high, method, source, text, evidence, announced_on, notice_url, source_published_at, first_observed_at, available_at, available_basis` |
 | `actions` | The hindsight choice: per event, the accepted version of highest precedence (same columns) |

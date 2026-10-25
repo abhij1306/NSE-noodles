@@ -25,7 +25,7 @@ Fill the key columns from the review row:
 |---|---|
 | `table` | `demergers` → `demerger`, `rights_issues` → `rights`, `bonus_instruments` → `bonus_instrument`, `splits_bonus` → `split_bonus` |
 | `symbol`, `isin` | copied |
-| `ex_date` | `day`, exactly. **Always NSE's ex-date**, even when the source names another date |
+| `ex_date` | `day`: **NSE's ex-date** (see the date rule below) |
 
 ## Rules
 
@@ -33,6 +33,12 @@ Fill the key columns from the review row:
 - Use only values a source states. Never infer, compute or guess a ratio, price or date; leave
   the cell empty and say why in `notes`.
 - Every row carries `source_url` and a short verbatim `quote` (the sentence with the number).
+- **Dates.** Write NSE's ex-date in `ex_date`. Only if the sources show NSE's date is wrong,
+  write the true ex-date instead: for a demerger or rights issue within 60 days of NSE's, the
+  event goes to review as `date_disputed` for a person to decide (say so in your summary).
+  Never write a date more than 60 days from NSE's: the row would become a separate event. Put
+  the record date the source states in `record_date`; one that is not 0 to 7 days after NSE's
+  ex-date also sends the event to `date_disputed`.
 - `source_date` is the date the source was published (filing or circular date). Without it the
   value never enters a point-in-time replay. Never write a date earlier than the source shows.
 - Formats, or the build stops with `CurationError <file>:<line>`:
@@ -60,8 +66,9 @@ Fill the key columns from the review row:
 ## What to find, per table
 
 - **demerger** (`table=demerger`, `leg_type=demerger`): one row per resulting company:
-  `resulting_name`, `resulting_symbol`, `resulting_isin` (the build finds its prices by ISIN,
-  else symbol), `ratio_a` resulting shares for every `ratio_b` parent shares, `record_date`.
+  `resulting_name`, `resulting_symbol`, `resulting_isin` (always give the ISIN when a source
+  states it: by symbol alone the build accepts only one new listing, else the event goes to
+  review as `resulting_company_ambiguous`), `ratio_a` resulting shares for every `ratio_b` parent shares, `record_date`.
   Also the cost-of-acquisition split if published (`coa_parent_pct`, `coa_resulting_pct`, in
   percent; the most useful cross-check, but a book-value tax split, not a price). Amalgamation
   legs of the same scheme get their own rows with `leg_type=amalgamation`. Preference shares,
