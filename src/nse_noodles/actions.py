@@ -460,14 +460,17 @@ def _price_factors(p: Proposal, before: Bar, on: Bar, out: Outcome) -> list[tupl
 
 
 def _price_legs(group: list[Proposal], before: Bar, on: Bar, out: Outcome) -> list[PriceLeg]:
-    """Every distinct (type, factor) of the group, with the first proposal that states it."""
+    """Every distinct (type, factor) of the group, with the first proposal that states it; a
+    proposal that only repeats earlier ones is skipped as a duplicate."""
     legs: list[PriceLeg] = []
     seen: set[tuple[str, Fraction]] = set()
     for p in group:
-        for kind, f in _price_factors(p, before, on, out):
-            if (kind, f) not in seen:
-                seen.add((kind, f))
-                legs.append((p, kind, f))
+        stated = _price_factors(p, before, on, out)
+        new = [leg for leg in dict.fromkeys(stated) if leg not in seen]
+        if stated and not new:
+            out.skipped.append(_row(p, "duplicate_event"))
+        seen.update(new)
+        legs += [(p, kind, f) for kind, f in new]
     return legs
 
 

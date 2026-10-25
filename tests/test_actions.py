@@ -82,6 +82,13 @@ def test_two_rows_with_one_kind_on_one_session_conflict():
     assert [r["reason"] for r in out.review] == ["conflicting_rows", "conflicting_rows"]
 
 
+def test_a_row_repeating_another_rows_factor_is_skipped_as_a_duplicate():
+    out = Outcome()
+    got = actions.decide_price_group("C", BEFORE, _on(50.0), [_split(), _split()], out)
+    assert _decided(got) == [("split", 0.5, "gate_confirmed", "ex_open")]
+    assert ([r["reason"] for r in out.skipped], out.review) == (["duplicate_event"], [])
+
+
 def test_rights_lost_in_the_session_move_are_kept_unconfirmed():
     out = Outcome()
     # TERP factor (4*100 + 80) / (5*100) = 0.96; an open of 98 cannot tell it from noise
